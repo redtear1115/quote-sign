@@ -1,0 +1,252 @@
+{
+ "code": 200,
+ "message": "Success",
+ "file_type": "PDF",
+ "result": {
+  "markdown": "## 報價單 Q2026-031\n\n賣方：南方之光工作室（範例資料）\n\n買方：晨星設計有限公司（範例資料）\n\n報價日期：2026-11-20\n\n有效期限：2026-12-05\n\n<table border=1 style='margin: auto; word-wrap: break-word;'><tr><td style='text-align: center; word-wrap: break-word;'>項目</td><td style='text-align: center; word-wrap: break-word;'>數量</td><td style='text-align: center; word-wrap: break-word;'>單價 (NT$)</td><td style='text-align: center; word-wrap: break-word;'>小計 (NT$)</td></tr><tr><td style='text-align: center; word-wrap: break-word;'>MarsDawn 團隊授權 (年)</td><td style='text-align: center; word-wrap: break-word;'>12</td><td style='text-align: center; word-wrap: break-word;'>1,800</td><td style='text-align: center; word-wrap: break-word;'>21,600</td></tr><tr><td style='text-align: center; word-wrap: break-word;'>自訂主題設計</td><td style='text-align: center; word-wrap: break-word;'>1</td><td style='text-align: center; word-wrap: break-word;'>15,000</td><td style='text-align: center; word-wrap: break-word;'>15,000</td></tr><tr><td style='text-align: center; word-wrap: break-word;'>導入教學 (2 小時)</td><td style='text-align: center; word-wrap: break-word;'>1</td><td style='text-align: center; word-wrap: break-word;'>6,000</td><td style='text-align: center; word-wrap: break-word;'>6,000</td></tr></table>\n\n未稅合計：NT$42,600\n\n營業稅 5% : NT$2,130\n\n含稅總計：NT$44,730\n\n### 條款\n\n1. 付款條件：簽約後30日內一次付清。\n\n2. 交付日期：2026-12-15 前完成授權開通與主題交付。\n\n3. 本報價單經雙方簽署後視為合約。\n\n買方簽署：___ 日期：___\n\n賣方簽署：___ 日期：___\n\n",
+  "valid_page_number": 1,
+  "total_page_number": 1,
+  "detail": [
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "paragraph_title",
+    "position": [
+     87,
+     188,
+     507,
+     188,
+     507,
+     238,
+     87,
+     238
+    ],
+    "text": "## 報價單 Q2026-031"
+   },
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "text",
+    "position": [
+     105,
+     291,
+     507,
+     291,
+     507,
+     321,
+     105,
+     321
+    ],
+    "text": "賣方：南方之光工作室（範例資料）"
+   },
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "text",
+    "position": [
+     106,
+     336,
+     531,
+     336,
+     531,
+     366,
+     106,
+     366
+    ],
+    "text": "買方：晨星設計有限公司（範例資料）"
+   },
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "text",
+    "position": [
+     106,
+     380,
+     391,
+     380,
+     391,
+     410,
+     106,
+     410
+    ],
+    "text": "報價日期：2026-11-20"
+   },
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "text",
+    "position": [
+     106,
+     424,
+     395,
+     424,
+     395,
+     453,
+     106,
+     453
+    ],
+    "text": "有效期限：2026-12-05"
+   },
+   {
+    "page_id": 1,
+    "type": "table",
+    "sub_type": "bordered",
+    "position": [
+     89,
+     481,
+     888,
+     481,
+     888,
+     716,
+     89,
+     716
+    ],
+    "text": "\n<table border=1 style='margin: auto; word-wrap: break-word;'><tr><td style='text-align: center; word-wrap: break-word;'>項目</td><td style='text-align: center; word-wrap: break-word;'>數量</td><td style='text-align: center; word-wrap: break-word;'>單價 (NT$)</td><td style='text-align: center; word-wrap: break-word;'>小計 (NT$)</td></tr><tr><td style='text-align: center; word-wrap: break-word;'>MarsDawn 團隊授權 (年)</td><td style='text-align: center; word-wrap: break-word;'>12</td><td style='text-align: center; word-wrap: break-word;'>1,800</td><td style='text-align: center; word-wrap: break-word;'>21,600</td></tr><tr><td style='text-align: center; word-wrap: break-word;'>自訂主題設計</td><td style='text-align: center; word-wrap: break-word;'>1</td><td style='text-align: center; word-wrap: break-word;'>15,000</td><td style='text-align: center; word-wrap: break-word;'>15,000</td></tr><tr><td style='text-align: center; word-wrap: break-word;'>導入教學 (2 小時)</td><td style='text-align: center; word-wrap: break-word;'>1</td><td style='text-align: center; word-wrap: break-word;'>6,000</td><td style='text-align: center; word-wrap: break-word;'>6,000</td></tr></table>"
+   },
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "text",
+    "position": [
+     106,
+     748,
+     387,
+     748,
+     387,
+     778,
+     106,
+     778
+    ],
+    "text": "未稅合計：NT$42,600"
+   },
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "text",
+    "position": [
+     106,
+     793,
+     389,
+     793,
+     389,
+     823,
+     106,
+     823
+    ],
+    "text": "營業稅 5% : NT$2,130"
+   },
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "text",
+    "position": [
+     106,
+     838,
+     386,
+     838,
+     386,
+     869,
+     106,
+     869
+    ],
+    "text": "含稅總計：NT$44,730"
+   },
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "paragraph_title",
+    "position": [
+     87,
+     931,
+     163,
+     931,
+     163,
+     973,
+     87,
+     973
+    ],
+    "text": "### 條款"
+   },
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "text",
+    "position": [
+     100,
+     1013,
+     534,
+     1013,
+     534,
+     1043,
+     100,
+     1043
+    ],
+    "text": "1. 付款條件：簽約後30日內一次付清。"
+   },
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "text",
+    "position": [
+     98,
+     1057,
+     699,
+     1057,
+     699,
+     1087,
+     98,
+     1087
+    ],
+    "text": "2. 交付日期：2026-12-15 前完成授權開通與主題交付。"
+   },
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "text",
+    "position": [
+     98,
+     1102,
+     492,
+     1102,
+     492,
+     1132,
+     98,
+     1132
+    ],
+    "text": "3. 本報價單經雙方簽署後視為合約。"
+   },
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "text",
+    "position": [
+     87,
+     1165,
+     593,
+     1165,
+     593,
+     1196,
+     87,
+     1196
+    ],
+    "text": "買方簽署：___ 日期：___"
+   },
+   {
+    "page_id": 1,
+    "type": "paragraph",
+    "sub_type": "text",
+    "position": [
+     86,
+     1226,
+     594,
+     1226,
+     594,
+     1258,
+     86,
+     1258
+    ],
+    "text": "賣方簽署：___ 日期：___"
+   }
+  ]
+ }
+}
