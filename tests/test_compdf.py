@@ -176,3 +176,10 @@ def test_zip_path_is_never_extracted(pdf_path, result_bytes, fake_transport, tmp
                                HttpResponse(200, archive(result_bytes, "../../result_json.json")))
     assert ComPdfClient(KEY, transport).parse(pdf_path).page_count == 1
     assert sorted(path.name for path in tmp_path.iterdir()) == ["quote.pdf"]
+
+
+def test_real_sample_signature_anchors(pdf_path, result_bytes, fake_transport):
+    transport = fake_transport(upload_response(), HttpResponse(200, result_bytes))
+    parsed = ComPdfClient(KEY, transport).parse(pdf_path)
+    assert parsed.anchors == {"buyer": (1, (87, 1165, 593, 1196)),
+                              "seller": (1, (86, 1226, 594, 1258))}

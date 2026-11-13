@@ -5,18 +5,20 @@ from datetime import date
 from pathlib import Path
 from typing import Callable, Optional
 import unicodedata
+import hashlib
+import re
 
 from .checks import (
     EXTRACT_SYSTEM, REVIEW_SYSTEM, build_extract_user, build_review_user,
     check_arithmetic, check_dates, diff_quotes, parse_review, quote_from_compdf,
     quote_from_llm_json, review_notes,
 )
-from .errors import ExportError, LlmError, PdfReadError, QuoteSignError, SigningNotConfigured
+from .errors import ExportError, LlmError, PdfReadError, QuoteSignError, SigningError, SigningQuotaExceeded
 from .export_pdf import ExportResult
 from .models import Issue, LlmClient, LlmResult, PdfReader
 from .money import fmt
 from .secrets import emit
-from .sign import Signer
+from .sign import Signer, SignRequest
 
 
 @dataclass
@@ -68,7 +70,7 @@ def _show_tables(tables: list[list[list[str]]]) -> None:
                             for cell, width in zip(cells, widths)).rstrip())
 
 
-def run(md_path: Path, deps: Deps, send: bool = False) -> int:
+def run(md_path: Path, deps: Deps, send: bool = False, dry_run: bool = False, resend: bool = False) -> int:
     if deps.extract_model == deps.review_model:
         raise QuoteSignError("抽欄位與審條款必須使用不同模型")
     try:
@@ -129,9 +131,18 @@ def run(md_path: Path, deps: Deps, send: bool = False) -> int:
         emit("未送簽（預設只做到第 3 步；加 --send 才會嘗試送簽）")
         return 0
     try:
-        task_id = deps.signer.send(exported.path, buyer_email="", seller_email="", dry_run=True)
-    except SigningNotConfigured as exc:
+        match = re.search(r"報價單\s*(Q\d{4}-\d{3})", parsed.markdown + "\n" + "\n".join(parsed.paragraphs))
+        if not match:
+            raise SigningError("找不到報價單號") from None
+        request = SignRequest(exported.path, hashlib.sha256(md_path.read_bytes()).hexdigest(),
+                              match.group(1), compdf_q.buyer, compdf_q.seller,
+                              date.fromisoformat(compdf_q.valid_until) if compdf_q.valid_until else None,
+                              parsed.anchors.get("buyer"), parsed.anchors.get("seller"))
+        deps.signer.send(request, dry_run=dry_run, resend=resend)
+    except SigningQuotaExceeded as exc:
+        emit(f"第 4 步（送簽）停止：{exc}")
+        return 41
+    except SigningError as exc:
         emit(f"第 4 步（送簽）停止：{exc}")
         return 40
-    emit(f"第 4 步（送簽）完成：{task_id}")
     return 0

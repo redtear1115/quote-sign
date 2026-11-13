@@ -24,7 +24,7 @@ class FakeTransport:
         if not self.responses:
             raise AssertionError("Unexpected transport call")
         response = self.responses.pop(0)
-        if isinstance(response, Exception):
+        if isinstance(response, BaseException):
             raise response
         return response
 
@@ -55,7 +55,8 @@ def parsed(sample_path):
             ["MarsDawn 團隊授權（年）", "12", "1,800", "21,600"],
             ["自訂主題設計", "1", "15,000", "15,000"],
             ["導入教學（2 小時）", "1", "6,000", "6,000"],
-        ]], page_count=1,
+        ]], page_count=1, anchors={"buyer": (1, (87, 1165, 593, 1196)),
+                                    "seller": (1, (86, 1226, 594, 1258))},
     )
 
 
@@ -129,3 +130,19 @@ class FakeSigner:
 def deps(parsed, quote, tmp_path):
     return Deps(FakeExport(), FakeReader(parsed), FakeLlm(quote), FakeSigner(),
                 "cheap", "strong", date(2026, 11, 20), tmp_path / "out")
+
+
+@pytest.fixture(autouse=True)
+def offline_and_private(monkeypatch, tmp_path):
+    """Every test uses an isolated home and cannot open real network sockets."""
+    import socket
+    from quote_sign import secrets
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    for name in secrets.SECRET_NAMES + secrets.EMAIL_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    def blocked(*args, **kwargs):
+        raise AssertionError("Real network I/O is forbidden in tests")
+    monkeypatch.setattr(socket.socket, "connect", blocked)
+    monkeypatch.setattr(socket.socket, "connect_ex", blocked)
+    monkeypatch.setattr(socket, "create_connection", blocked)
+    monkeypatch.setattr(socket, "getaddrinfo", blocked)

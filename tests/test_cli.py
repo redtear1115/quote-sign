@@ -31,14 +31,17 @@ def test_arg_parsing(sample_path, deps, tmp_path, monkeypatch):
         return deps
 
     monkeypatch.setattr(cli, "build_real_deps", build)
-    monkeypatch.setattr(cli, "run", lambda path, deps, send: 40 if send else 0)
+    monkeypatch.setattr(cli, "run", lambda path, deps, send, **kwargs: 40 if send else 0)
     out_dir = tmp_path / "pdf"
-    state_dir = tmp_path / "state"
+    monkeypatch.setenv("QUOTE_SIGN_BUYER_EMAIL", "buyer@example.invalid")
+    monkeypatch.setenv("QUOTE_SIGN_SELLER_EMAIL", "seller@example.invalid")
+    for name in cli.DOTTEDSIGN_NAMES:
+        monkeypatch.setenv(name, "fake-dottedsign-credential-0001")
     assert cli.main([str(sample_path), "--out-dir", str(out_dir), "--send", "--today", "2026-11-21",
-                     "--extract-model", "extract", "--review-model", "review", "--state-dir", str(state_dir),
+                     "--extract-model", "extract", "--review-model", "review",
                      "--spend-cap-usd", "1.25"]) == 40
     args = captured[0]
-    assert args.file == sample_path and args.out_dir == out_dir and args.state_dir == state_dir
+    assert args.file == sample_path and args.out_dir == out_dir
     assert args.today == date(2026, 11, 21) and args.spend_cap_usd == Decimal("1.25")
     assert args.extract_model == "extract" and args.review_model == "review" and args.send
 
@@ -51,10 +54,10 @@ def test_defaults(sample_path, deps, monkeypatch):
         return deps
 
     monkeypatch.setattr(cli, "build_real_deps", build)
-    monkeypatch.setattr(cli, "run", lambda path, deps, send: 0)
+    monkeypatch.setattr(cli, "run", lambda path, deps, send, **kwargs: 0)
     assert cli.main([str(sample_path)]) == 0
     args = captured[0]
-    assert args.out_dir == Path("out") and args.state_dir == Path(".quote-sign")
+    assert args.out_dir == Path("out")
     assert args.extract_model == "auto" and args.review_model == "gpt-6-sol"
     assert args.spend_cap_usd == Decimal(5) and not args.send
     assert isinstance(args.today, date)
@@ -142,7 +145,7 @@ def test_lazy_real_client_wiring(sample_path, monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "quote_sign.compdf", compdf)
     monkeypatch.setitem(sys.modules, "quote_sign.llm", llm)
     args = type("Args", (), {
-        "state_dir": tmp_path, "spend_cap_usd": Decimal("2.5"), "out_dir": tmp_path / "out",
+        "spend_cap_usd": Decimal("2.5"), "out_dir": tmp_path / "out",
         "extract_model": "auto", "review_model": "strong", "today": date(2026, 11, 20),
     })()
     deps = cli.build_real_deps(args)
@@ -151,7 +154,7 @@ def test_lazy_real_client_wiring(sample_path, monkeypatch, tmp_path):
     assert deps.llm.extract is not deps.llm.review
     assert sorted(call[0] for call in calls) == ["ledger", "llm", "llm", "reader"]
     assert ("reader", {"api_key": "fake-COMPDF_PUBLIC_KEY", "transport": None}) in calls
-    assert ("ledger", tmp_path / "spend.json", {"cap_usd": Decimal("2.5")}) in calls
+    assert ("ledger", Path.home() / ".quote-sign" / "spend.json", {"cap_usd": Decimal("2.5")}) in calls
     extract, review = deps.llm.extract.kwargs, deps.llm.review.kwargs
     assert extract["api_key"] == "fake-MIX_ROUTE_SMART_ROUTING_KEY"
     assert review["api_key"] == "fake-MIX_ROUTE_API_KEY"
@@ -184,7 +187,7 @@ def test_real_client_construction(monkeypatch, tmp_path):
     }.items():
         monkeypatch.setenv(name, value)
     args = type("Args", (), {
-        "state_dir": tmp_path / "state", "spend_cap_usd": Decimal("5"),
+        "spend_cap_usd": Decimal("5"),
         "out_dir": tmp_path / "out", "today": date(2026, 11, 13),
         "extract_model": "auto", "review_model": "gpt-6-sol",
     })()
@@ -195,5 +198,106 @@ def test_real_client_construction(monkeypatch, tmp_path):
     assert deps.llm.extract._api_key == "fake-smart-routing-key"
     assert deps.llm.review._api_key == "fake-mixroute-key"
     assert deps.llm.extract.ledger is deps.llm.review.ledger
-    assert deps.llm.extract.ledger.path == args.state_dir / "spend.json"
-    assert not args.state_dir.exists()
+    assert deps.llm.extract.ledger.path == Path.home() / ".quote-sign" / "spend.json"
+
+
+@pytest.mark.parametrize("arguments", [["--spend-cap-usd", "5.01"],
+                                       ["--dry-run"], ["--resend"]])
+def test_new_usage_errors(sample_path, arguments):
+    with pytest.raises(SystemExit) as caught:
+        cli.main([str(sample_path)] + arguments)
+    assert caught.value.code == 2
+
+
+def test_cap_five_accepted(sample_path, deps, monkeypatch):
+    monkeypatch.setattr(cli, "build_real_deps", lambda _: deps)
+    assert cli.main([str(sample_path), "--spend-cap-usd", "5"]) == 0
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_send_missing_emails_before_steps(sample_path, monkeypatch, capsys, dry_run):
+    monkeypatch.setattr(cli, "build_real_deps", lambda _: pytest.fail("Must fail before step 1"))
+    args = [str(sample_path), "--send"] + (["--dry-run"] if dry_run else [])
+    assert cli.main(args) == 2
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert all(name in captured.err for name in secrets.EMAIL_NAMES)
+    assert "@" not in captured.err
+
+
+def test_send_requires_credentials_before_steps(sample_path, monkeypatch, capsys):
+    monkeypatch.setenv("QUOTE_SIGN_BUYER_EMAIL", "buyer@example.invalid")
+    monkeypatch.setenv("QUOTE_SIGN_SELLER_EMAIL", "seller@example.invalid")
+    monkeypatch.setattr(cli, "build_real_deps", lambda _: pytest.fail("Must fail before step 1"))
+    assert cli.main([str(sample_path), "--send"]) == 2
+    text = capsys.readouterr().err
+    assert all(name in text for name in cli.DOTTEDSIGN_NAMES) and "@" not in text
+
+
+def test_dry_run_does_not_require_signing_credentials(sample_path, deps, monkeypatch):
+    monkeypatch.setenv("QUOTE_SIGN_BUYER_EMAIL", "buyer@example.invalid")
+    monkeypatch.setenv("QUOTE_SIGN_SELLER_EMAIL", "seller@example.invalid")
+    monkeypatch.setattr(cli, "build_real_deps", lambda _: deps)
+    assert cli.main([str(sample_path), "--send", "--dry-run"]) == 0
+    assert deps.signer.calls[0][1]["dry_run"] is True
+
+
+@pytest.mark.parametrize("command,expected", [("status", 0), ("fetch", 43)])
+def test_tracking_needs_only_dottedsign(monkeypatch, command, expected):
+    from types import SimpleNamespace
+    from quote_sign.dottedsign import TaskStatus
+    for name in cli.DOTTEDSIGN_NAMES:
+        monkeypatch.setenv(name, "fake-dottedsign-credential-0001")
+    monkeypatch.setattr(cli, "build_signing_client", lambda: SimpleNamespace(
+        get_task=lambda _: TaskStatus(91, "waiting", None, ())))
+    assert cli.main([command, "91"]) == expected
+
+
+@pytest.mark.parametrize("arguments", [["status", "0"], ["fetch", "bad"], ["status", "91", "--watch", "21"],
+                                       ["status", "91", "--watch", "0"]])
+def test_tracking_usage_errors(arguments):
+    with pytest.raises(SystemExit) as caught:
+        cli.main(arguments)
+    assert caught.value.code == 2
+
+
+def test_keyboard_interrupt_is_clean(sample_path, monkeypatch, capsys):
+    def interrupt(_):
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(cli, "build_real_deps", interrupt)
+    assert cli.main([str(sample_path)]) == 130
+    text = capsys.readouterr().err
+    assert text == "已中斷。\n" and "Traceback" not in text
+
+
+def test_signer_factory_is_lazy_and_fixed_log_location(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from quote_sign.sign import DottedSignSigner
+    monkeypatch.setenv("QUOTE_SIGN_BUYER_EMAIL", "buyer@example.invalid")
+    monkeypatch.setenv("QUOTE_SIGN_SELLER_EMAIL", "seller@example.invalid")
+    monkeypatch.setattr(cli, "build_signing_client", lambda: pytest.fail("Must be lazy"))
+    signer = cli.build_signer(SimpleNamespace(send=True, dry_run=True))
+    assert isinstance(signer, DottedSignSigner)
+    assert signer.task_log.path == Path.home() / ".quote-sign" / "sign-tasks.jsonl"
+    assert not signer.task_log.path.parent.exists()
+
+
+def test_cli_watch_and_completed_fetch(monkeypatch, tmp_path, capsys):
+    from types import SimpleNamespace
+    from quote_sign import track
+    from quote_sign.dottedsign import TaskStatus
+    for name in cli.DOTTEDSIGN_NAMES:
+        monkeypatch.setenv(name, "fake-dottedsign-credential-0001")
+    sleeps = []
+    states = iter(["waiting", "completed", "completed"])
+    monkeypatch.setattr(track.time, "sleep", sleeps.append)
+    monkeypatch.setattr(cli, "build_signing_client", lambda: SimpleNamespace(
+        get_task=lambda _: TaskStatus(91, next(states), 1796486399, ()),
+        download_signed=lambda _: b"%PDF-fake"))
+    assert cli.main(["status", "91", "--watch", "3"]) == 0
+    assert sleeps == [30]
+    capsys.readouterr()
+    assert cli.main(["fetch", "91", "--out-dir", str(tmp_path / "out")]) == 0
+    output = capsys.readouterr().out
+    assert '"task_id": 91' in output and "@" not in output
+    assert (tmp_path / "out" / "signed" / "task-91-signed.pdf").read_bytes() == b"%PDF-fake"

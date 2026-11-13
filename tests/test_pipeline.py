@@ -109,13 +109,19 @@ def test_send_refused(deps, sample_path, capsys):
     assert run(sample_path, deps, send=True) == 40
     output = capsys.readouterr().out
     assert "第 4 步（送簽）停止" in output
-    assert "QUOTE_SIGN_TEST_EMAIL_1 / QUOTE_SIGN_TEST_EMAIL_2" in output
+    assert "QUOTE_SIGN_BUYER_EMAIL / QUOTE_SIGN_SELLER_EMAIL" in output
 
 
-def test_signer_only_called_after_pass_with_placeholder_emails(deps, sample_path):
+def test_signer_only_called_after_pass_with_request(deps, sample_path):
     assert run(sample_path, deps, send=True) == 0
-    assert deps.signer.calls == [((deps.out_dir / "from-export.pdf",),
-                                 {"buyer_email": "", "seller_email": "", "dry_run": True})]
+    from quote_sign.sign import SignRequest
+    assert len(deps.signer.calls) == 1
+    (request,), kwargs = deps.signer.calls[0]
+    assert isinstance(request, SignRequest)
+    assert request.pdf_path == deps.out_dir / "from-export.pdf"
+    assert request.quote_no == "Q2026-031"
+    assert request.buyer_anchor and request.seller_anchor
+    assert kwargs == {"dry_run": False, "resend": False}
 
 
 def test_same_models_fail_before_any_call(deps, sample_path):
@@ -176,3 +182,29 @@ def test_report_table_rows_align(deps, sample_path, capsys):
     from quote_sign.pipeline import _width
 
     assert len({_width(row.split(" | ")[0]) for row in rows}) == 1
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_bad_sample_never_reaches_signer(deps, sample_path, dry_run, capsys):
+    deps.reader.parsed.tables[0][2][3] = "12,000"
+    deps.llm.extraction["items"][1]["subtotal"] = "12,000"
+    assert run(sample_path.with_name("quote-Q2026-031-bad.md"), deps, send=True, dry_run=dry_run) == 30
+    assert not deps.signer.calls
+    assert "第 2 列小計應為 15,000" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("quota,code", [(False, 40), (True, 41)])
+def test_signing_errors_exit_codes(deps, sample_path, quota, code):
+    from quote_sign.errors import SigningError, SigningQuotaExceeded
+    def fail(*args, **kwargs):
+        raise (SigningQuotaExceeded if quota else SigningError)("安全錯誤")
+    deps.signer.send = fail
+    assert run(sample_path, deps, send=True) == code
+
+
+def test_missing_quote_number_stops(deps, sample_path):
+    from dataclasses import replace
+    deps.reader.parsed = replace(deps.reader.parsed,
+                                 markdown=deps.reader.parsed.markdown.replace("Q2026-031", "missing"))
+    assert run(sample_path, deps, send=True) == 40
+    assert not deps.signer.calls

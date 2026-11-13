@@ -167,3 +167,52 @@ def test_stdout_and_stderr_are_masked(fake_keys, capsys):
     secrets.emit_err(value)
     captured = capsys.readouterr()
     assert captured.out == "***\n" and captured.err == "***\n"
+
+
+@pytest.mark.parametrize("addr,expected", [("alice@fake-mail.test", "a***@f***.test"),
+    ("bob@mail.example.invalid", "b***@m***.invalid"), ("x@y.z", "x***@y***.z"),
+    ("invalid", "***"), ("@example.invalid", "***"), ("a@", "***"),
+    ("a@example", "***"), ("a@@example.invalid", "***"), ("a@.invalid", "***"),
+    ("a b@example.invalid", "***")])
+def test_mask_email(addr, expected):
+    assert secrets.mask_email(addr) == expected
+
+
+def test_email_masking_case_insensitive_and_arbitrary(monkeypatch):
+    monkeypatch.setenv("QUOTE_SIGN_BUYER_EMAIL", "buyer@example.invalid")
+    monkeypatch.setenv("QUOTE_SIGN_SELLER_EMAIL", "seller@example.invalid")
+    monkeypatch.setenv("MIX_ROUTE_API_KEY", "fake-secret-0001")
+    output = secrets.mask("BUYER@EXAMPLE.INVALID seller@example.invalid other@else.invalid fake-secret-0001")
+    assert output == "b***@e***.invalid s***@e***.invalid o***@e***.invalid ***"
+
+
+def test_email_reverse_check(monkeypatch, capsys):
+    value = "buyer@example.invalid"
+    monkeypatch.setenv("QUOTE_SIGN_BUYER_EMAIL", value)
+    monkeypatch.setattr(secrets, "MASKING_ENABLED", False)
+    secrets.emit(value)
+    assert capsys.readouterr().out == value + "\n"
+
+
+@pytest.mark.parametrize("buyer,seller", [("bad", "seller@example.invalid"),
+    ("buyer@example.invalid", "BUYER@EXAMPLE.INVALID"), ("a b@example.invalid", "seller@example.invalid"),
+    ("a@@example.invalid", "seller@example.invalid"), ("a@nodot", "seller@example.invalid"),
+    ("a"*250+"@x.invalid", "seller@example.invalid")])
+def test_invalid_signer_configuration_names_only(monkeypatch, buyer, seller):
+    from quote_sign.errors import SigningNotConfigured
+    monkeypatch.setenv("QUOTE_SIGN_BUYER_EMAIL", buyer)
+    monkeypatch.setenv("QUOTE_SIGN_SELLER_EMAIL", seller)
+    with pytest.raises(SigningNotConfigured) as caught:
+        secrets.require_signer_emails()
+    assert buyer not in str(caught.value) and seller not in str(caught.value)
+    assert "QUOTE_SIGN_BUYER_EMAIL" in str(caught.value)
+
+
+def test_require_signers_missing_then_valid(monkeypatch):
+    with pytest.raises(MissingSecretError) as caught:
+        secrets.require_signer_emails()
+    assert caught.value.names == list(secrets.EMAIL_NAMES)
+    values = ("buyer@example.invalid", "seller@example.invalid")
+    for name, value in zip(secrets.EMAIL_NAMES, values):
+        monkeypatch.setenv(name, value)
+    assert secrets.require_signer_emails() == values

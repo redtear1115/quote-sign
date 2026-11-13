@@ -27,5 +27,13 @@ class MissingSecretError(QuoteSignError):
         super().__init__("缺少環境變數：" + ", ".join(names) + "（只列名稱）")
 
 
-class SigningNotConfigured(QuoteSignError):
+class SigningError(QuoteSignError):
+    pass
+
+
+class SigningQuotaExceeded(SigningError):
+    pass
+
+
+class SigningNotConfigured(SigningError):
     pass

@@ -11,10 +11,13 @@ from .errors import QuoteSignError
 MAX_RESPONSE_BYTES = 25 * 1024 * 1024
 
 
-@dataclass
+@dataclass(repr=False)
 class HttpResponse:
     status: int
     body: bytes
+
+    def __repr__(self):
+        return "HttpResponse(redacted)"
 
 
 class Transport(Protocol):

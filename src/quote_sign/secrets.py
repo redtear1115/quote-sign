@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 
-from .errors import MissingSecretError
+from .errors import MissingSecretError, SigningNotConfigured
 
 SECRET_NAMES = (
     "MIX_ROUTE_SMART_ROUTING_KEY", "MIX_ROUTE_API_KEY", "MIX_ROUTE_BASE_URL",
     "COMPDF_PUBLIC_KEY", "COMPDF_SECRET_KEY", "DOTTEDSIGN_SANDBOX_CLIENT_ID",
     "DOTTEDSIGN_SANDBOX_CLIENT_SECRET",
 )
+EMAIL_NAMES = ("QUOTE_SIGN_BUYER_EMAIL", "QUOTE_SIGN_SELLER_EMAIL")
 MASKING_ENABLED = True
+_EMAIL = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 
 
 def require(*names: str) -> dict[str, str]:
@@ -29,7 +32,35 @@ def mask(text: str) -> str:
         for value in sorted(values, key=len, reverse=True):
             if len(value) >= 4:
                 result = result.replace(value, "***")
+        for name in EMAIL_NAMES:
+            value = os.environ.get(name, "")
+            if value:
+                result = re.sub(re.escape(value), lambda _: mask_email(value), result, flags=re.I)
+        result = _EMAIL.sub(lambda m: mask_email(m.group()), result)
     return result
+
+
+def mask_email(addr: str) -> str:
+    if not _valid_email(addr):
+        return "***"
+    local, domain = addr.split("@")
+    labels = domain.split(".")
+    return local[0] + "***@" + labels[0][0] + "***." + labels[-1]
+
+
+def _valid_email(addr):
+    return (isinstance(addr, str) and len(addr) <= 254 and addr.count("@") == 1
+            and not any(c.isspace() for c in addr) and bool(addr.split("@")[0])
+            and "." in addr.split("@")[1]
+            and all(addr.split("@")[1].split(".")))
+
+
+def require_signer_emails() -> tuple[str, str]:
+    values = require(*EMAIL_NAMES)
+    buyer, seller = (values[name] for name in EMAIL_NAMES)
+    if not all(_valid_email(v) for v in (buyer, seller)) or buyer.lower() == seller.lower():
+        raise SigningNotConfigured("簽署信箱設定無效：" + " / ".join(EMAIL_NAMES)) from None
+    return buyer, seller
 
 
 class _MaskFilter(logging.Filter):

@@ -130,7 +130,7 @@ class ComPdfClient:
                 if len(content) > MAX_RESULT_BYTES:
                     raise PdfReadError(self._redact("ComPDF 結果超過大小限制"))
         result = json.loads(content)["result"]
-        paragraphs, tables = [], []
+        paragraphs, tables, anchors = [], [], {}
         for item in result.get("detail", []):
             text = item.get("text", "").strip()
             if item.get("type") == "table":
@@ -141,5 +141,12 @@ class ComPdfClient:
                 tables.append(parser.rows)
             else:
                 paragraphs.append(text)
+                for role, prefix in (("buyer", "買方簽署"), ("seller", "賣方簽署")):
+                    if "".join(text.split()).startswith(prefix):
+                        pos, page = item.get("position"), item.get("page_id")
+                        if (type(page) is int and isinstance(pos, list) and len(pos) == 8
+                                and all(type(n) in (int, float) for n in pos)):
+                            anchors[role] = (page, (min(pos[::2]), min(pos[1::2]),
+                                                    max(pos[::2]), max(pos[1::2])))
         return ParsedPdf(result.get("markdown", ""), paragraphs, tables,
-                         result.get("valid_page_number") or result.get("total_page_number") or 1)
+                         result.get("valid_page_number") or result.get("total_page_number") or 1, anchors)
