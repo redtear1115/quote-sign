@@ -12,9 +12,9 @@
 1. **寫**：報價單是一份 Markdown（範例見 `sample/quote-Q2026-031.md`）。
 2. **轉 PDF**：`marsdawn export <檔> -o <檔>.pdf --json`（已試過，1 頁 A4，見 `sample/quote-Q2026-031.pdf`）。
 3. **讀和檢查**：用 ComPDF MCP 從 PDF 讀出表格和條款，再分三層檢查，模型呼叫都走 MixRoute API：
-   - **抽欄位（便宜的模型）**：把 PDF 讀出的文字整理成固定的 JSON：買賣雙方、每一列的數量單價小計、合計、稅、日期、條款。這一步用 MixRoute 的 Smart Routing，讓平台自己選模型。
+   - **抽欄位（Smart Routing）**：把 PDF 讀出的文字整理成固定的 JSON：買賣雙方、每一列的數量單價小計、合計、稅、日期、條款。這一步用 MixRoute 的 Smart Routing：請求寫 `"model": "auto"`，Bearer 帶 Smart Routing key（`MIX_ROUTE_SMART_ROUTING_KEY`），讓平台自己選模型。
    - **算數（程式，不用模型）**：小計加總是否等於未稅合計、稅額和含稅總計是否正確、有效期限是否已過、交付日期是否早於報價日期、必要欄位是否都在。
-   - **審條款（另一家較強的模型）**：付款條件、交付日期、有沒有互相矛盾或缺漏的條款，各給一句理由。指定跟抽欄位不同家的模型，兩邊對同一欄位的讀法不一致時標出來。
+   - **審條款（指定較強的模型）**：付款條件、交付日期、有沒有互相矛盾或缺漏的條款，各給一句理由。用一般 MixRoute key（`MIX_ROUTE_API_KEY`）指定較強的模型（預設 `gpt-6-sol`），**不走 auto**；CLI 要求兩邊模型參數不同。兩邊對同一欄位的讀法不一致時標出來。
    檢查不過就停下，列出哪一行有問題，不送簽。每次呼叫記下實際用了哪個模型和花費，展示時印出來。
 4. **送簽**：用 DottedSign MCP 建立簽署任務，設定簽署順序（買方 → 賣方），寄出。簽名由當事人自己完成，AI 不代簽。
 5. **追蹤**：查簽署狀態。完成後下載已簽 PDF，寫一行紀錄（誰、何時、哪一版）。
@@ -35,7 +35,7 @@
 - 送到 MixRoute 的內容會經過第三方。只送範例報價單（假資料），不送任何私人 repo 的內容或真實客戶資料。
 - 開發額度 50 組已發完，測試費用要自己付。先用最便宜的模型測，估全部測試在 US$5 以內。
 - 參選 MixRoute 特別獎要在投稿時另外勾選，並同意 Elite Cloud 以非專屬、無償方式展示作品。
-- API 是 OpenAI 相容的寫法，實際的端點、Smart Routing 怎麼開，開工時先讀 mixroute.ai 的官方文件。
+- API 是 OpenAI 相容的寫法。Smart Routing 不是模型名，是另一把 key；用法見 [`service-notes.md`](service-notes.md)。成本上，`auto` 的單價事前不知道，程式用 `PRICES` 裡最貴的單價做花費上限檢查，回應回報的模型在 `PRICES` 內就改用該模型單價。
 
 ## 要 Ray 提供或決定
 
@@ -43,7 +43,8 @@
 2. **DottedSign 帳號**：已到位（Ray 11-13），是 **sandbox（測試環境）** 的 Open API 應用程式。同一個 `~/Projects/claude/.env`，變數名 `DOTTEDSIGN_SANDBOX_CLIENT_ID`、`DOTTEDSIGN_SANDBOX_CLIENT_SECRET`（Ray 11-13 改名）。Ditto 11-13 測過：`POST https://api.sandbox.dottedsign.com/v1/oauth/token`，JSON body `grant_type=client_credentials` 加 client_id、client_secret，回 200，拿到 Bearer token，效期 3600 秒，scope 含 sign_tasks 讀寫和下載。正式環境 `api.dottedsign.com` 會回 `invalid_client`，不要打。Sandbox 限制（官方文件）：每 24 小時 20 個簽署任務、每個任務最多 5 個階段、PDF 會加「Non official」浮水印、身分驗證（OTP 等）停用、資料每季第一天清空。浮水印要在影片和說明裡講明是測試環境。
 3. **測試用的簽署信箱**：需要 2 個你收得到的信箱當買方和賣方。
 4. **repo 名稱和要不要公開**：我建議 `quote-sign`，公開，放在 redtear1115 底下。
-5. **MixRoute API key**：已到位（Ray 11-13）。放在 `~/Projects/claude/.env`，變數名 `MIX_ROUTE_API_KEY`、`MIX_ROUTE_BASE_URL`，檔案權限 600，已被 git 忽略。程式用環境變數讀，不要把值印出來、寫進 log、commit 或貼到任何地方。Ditto 11-13 用 `GET /models` 測過：HTTP 200，帳號看得到 25 個模型（有 deepseek、gemini、gpt 系列）。模型清單裡沒看到名字像 smart／auto 的項目，Smart Routing 怎麼開要讀官方文件。
+5. **MixRoute API key**：已到位（Ray 11-13）。放在 `~/Projects/claude/.env`，變數名 `MIX_ROUTE_API_KEY`、`MIX_ROUTE_BASE_URL`，檔案權限 600，已被 git 忽略。程式用環境變數讀，不要把值印出來、寫進 log、commit 或貼到任何地方。Ditto 11-13 用 `GET /models` 測過：HTTP 200，帳號看得到 25 個模型（有 deepseek、gemini、gpt 系列）。模型清單裡沒看到名字像 smart／auto 的項目，因為 Smart Routing 是另一把 key，不是模型名。
+   **Smart Routing key**：已建立，變數名 `MIX_ROUTE_SMART_ROUTING_KEY`，放同一個 `.env`，同樣只用環境變數讀。分工（方案 B）：抽欄位 → Smart Routing key＋`model: auto`；審條款 → `MIX_ROUTE_API_KEY`＋指定的較強模型。兩條路徑、兩個環境變數，`MIX_ROUTE_BASE_URL` 共用。
 6. **KDAN 特別獎要不要勾**：如果你是 KDAN 員工，先確認可不可以參選。不勾也能投主賽。
 
 ## 還不確定的事

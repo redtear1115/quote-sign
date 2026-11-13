@@ -9,10 +9,11 @@ import stat
 import pytest
 
 from quote_sign.errors import BudgetExceeded, LlmError
-from quote_sign.llm import MixRouteClient, PRICES, SpendLedger
+from quote_sign.llm import MixRouteClient, PRICES, PurposeRoutedClient, SpendLedger
 from quote_sign.transport import HttpResponse, TransportError
 
 KEY = "fake-mixroute-credential"
+SMART_KEY = "fake-smart-routing-credential"
 SYSTEM = "private system prompt"
 USER = "private user prompt"
 MODEL = "deepseek-v4-flash"
@@ -124,11 +125,91 @@ def test_worst_case_exact_boundary(setup_client):
     assert len(transport.calls) == 1
 
 
-def test_unknown_model_without_request(setup_client):
+@pytest.mark.parametrize("model", ["unknown", "Auto", "auto "])
+def test_unknown_model_without_request(setup_client, model):
     client, ledger, transport = setup_client()
-    with pytest.raises(LlmError, match="沒有 unknown 的單價"):
-        call(client, model="unknown")
+    with pytest.raises(LlmError, match=f"沒有 {model} 的單價"):
+        call(client, model=model)
     assert not transport.calls and not ledger.path.exists()
+
+
+def test_auto_sends_auto_and_reports_model(setup_client):
+    client, ledger, transport = setup_client(response(model="gpt-5-mini"))
+    result = call(client, model="auto")
+    assert json.loads(transport.calls[0][3]) == {"model": "auto", "messages": [
+        {"role": "system", "content": SYSTEM}, {"role": "user", "content": USER}], "max_tokens": 600}
+    assert result.model == "gpt-5-mini"
+    assert json.loads(ledger.path.read_text())["calls"][0]["model"] == "gpt-5-mini"
+
+
+@pytest.mark.parametrize("reported, expected", [("gpt-5-nano", "0.00025"), ("gpt-6-sol", "0.007"),
+                                                (MODEL, "0.00028")])
+def test_auto_cost_uses_reported_model_prices(setup_client, reported, expected):
+    client, ledger, _ = setup_client(response(model=reported))
+    result = call(client, model="auto")
+    assert result.cost_usd == Decimal(expected) and result.cost_is_estimate
+    assert ledger.total() == Decimal(expected)
+
+
+@pytest.mark.parametrize("reported, shown", [("mystery-model", "mystery-model"), (None, "auto"),
+                                             (123, "auto"), ("auto", "auto")])
+def test_auto_unknown_reported_model_keeps_max_prices(setup_client, reported, shown):
+    client, ledger, _ = setup_client(response(model=reported))
+    result = call(client, model="auto")
+    assert result.model == shown
+    assert result.cost_usd == Decimal("0.007") and result.cost_is_estimate
+    assert json.loads(ledger.path.read_text())["calls"][0]["model"] == shown
+
+
+def test_auto_missing_usage_estimated_at_max_prices(setup_client):
+    client, _, _ = setup_client(response(usage={}, model="mystery-model"))
+    result = call(client, model="auto")
+    assert (result.prompt_tokens, result.completion_tokens) == (len(SYSTEM) + len(USER), 600)
+    assert result.cost_usd == ((len(SYSTEM) + len(USER)) * Decimal(2) + 600 * Decimal(10)) / 1_000_000
+
+
+def test_auto_reported_cost_still_wins(setup_client):
+    client, _, _ = setup_client(response(model="gpt-6-sol", usage={
+        "prompt_tokens": 1000, "completion_tokens": 500, "cost": 0.0042}))
+    result = call(client, model="auto")
+    assert result.cost_usd == Decimal("0.0042") and not result.cost_is_estimate
+
+
+def test_auto_worst_case_uses_max_prices(setup_client):
+    client, ledger, transport = setup_client(response(model="gpt-5-nano"))
+    worst = ((len(SYSTEM) + len(USER)) * Decimal("2.00") + 600 * Decimal("10.00")) / 1_000_000
+    ledger.cap_usd = worst - Decimal("0.000001")
+    with pytest.raises(BudgetExceeded, match="累計花費已達上限"):
+        call(client, model="auto")
+    assert not transport.calls
+    ledger.cap_usd = worst
+    call(client, model="auto")
+    assert len(transport.calls) == 1
+
+
+def test_pinned_model_budget_is_not_widened_by_auto_rule(setup_client):
+    client, ledger, transport = setup_client(response())
+    ledger.cap_usd = ((len(SYSTEM) + len(USER)) * Decimal("0.14") + 600 * Decimal("0.28")) / 1_000_000
+    call(client)
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("purpose, to_extract", [("抽欄位", True), ("審條款", False), ("其他", False)])
+def test_purpose_routing(tmp_path, fake_transport, purpose, to_extract):
+    ledger = SpendLedger(tmp_path / "spend.json", Decimal(5))
+    extract_transport = fake_transport(response(model="gpt-5-mini"))
+    review_transport = fake_transport(response(model="gpt-6-sol"))
+    routed = PurposeRoutedClient(
+        extract=MixRouteClient("https://mix.example/v1", SMART_KEY, ledger, extract_transport),
+        review=MixRouteClient("https://mix.example/v1", KEY, ledger, review_transport))
+    model = "auto" if to_extract else "gpt-6-sol"
+    result = call(routed, purpose=purpose, model=model)
+    used, unused = (extract_transport, review_transport) if to_extract else (review_transport, extract_transport)
+    assert not unused.calls and len(used.calls) == 1
+    assert used.calls[0][2]["Authorization"] == "Bearer " + (SMART_KEY if to_extract else KEY)
+    assert json.loads(used.calls[0][3])["model"] == model
+    assert result.model == ("gpt-5-mini" if to_extract else "gpt-6-sol")
+    assert [entry["purpose"] for entry in json.loads(ledger.path.read_text())["calls"]] == [purpose]
 
 
 @pytest.mark.parametrize("text", ["not json", "[]", "{}", '{"total_usd":"NaN","calls":[]}',
@@ -251,6 +332,7 @@ def test_atomic_failure_preserves_previous_ledger(setup_client, monkeypatch):
 
 
 def test_prices_exact():
+    assert "auto" not in PRICES
     assert PRICES == {name: (Decimal(i), Decimal(o)) for name, i, o in [
         (MODEL, "0.14", "0.28"), ("deepseek-v4-pro", "1.74", "3.48"),
         ("gpt-5-nano", "0.05", "0.40"), ("gpt-5-mini", "0.25", "2.00"),

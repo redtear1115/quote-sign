@@ -27,6 +27,11 @@ def test_mask_all_keys_at_call_time(fake_keys, monkeypatch):
     assert secrets.mask("new-key-CCCC2222") == "***"
 
 
+def test_smart_routing_key_is_a_masked_secret(fake_keys):
+    assert "MIX_ROUTE_SMART_ROUTING_KEY" in secrets.SECRET_NAMES
+    assert secrets.mask(fake_keys["MIX_ROUTE_SMART_ROUTING_KEY"]) == "***"
+
+
 def test_mask_non_string(fake_keys):
     assert "fake-key" not in secrets.mask(list(fake_keys.values()))
     assert secrets.mask(123) == "123"
@@ -63,8 +68,9 @@ def test_missing_file_has_no_secrets(fake_keys, tmp_path, capsys):
     assert "***" in captured.err
 
 
-def test_unexpected_client_exception_is_masked(fake_keys, deps, sample_path, monkeypatch, capsys):
-    deps.llm.error = RuntimeError("service failed: " + fake_keys["MIX_ROUTE_API_KEY"])
+@pytest.mark.parametrize("name", ["MIX_ROUTE_API_KEY", "MIX_ROUTE_SMART_ROUTING_KEY"])
+def test_unexpected_client_exception_is_masked(name, fake_keys, deps, sample_path, monkeypatch, capsys):
+    deps.llm.error = RuntimeError("service failed: " + fake_keys[name])
     monkeypatch.setattr(cli, "build_real_deps", lambda args: deps)
     assert cli.main([str(sample_path)]) == 70
     captured = capsys.readouterr()
@@ -93,8 +99,8 @@ def test_default_cli_missing_env_reports_names_only(sample_path, monkeypatch, ca
     assert cli.main([str(sample_path)]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == ("缺少環境變數：MIX_ROUTE_API_KEY, MIX_ROUTE_BASE_URL, "
-                            "COMPDF_PUBLIC_KEY, COMPDF_SECRET_KEY（只列名稱）\n")
+    assert captured.err == ("缺少環境變數：MIX_ROUTE_SMART_ROUTING_KEY, MIX_ROUTE_API_KEY, "
+                            "MIX_ROUTE_BASE_URL, COMPDF_PUBLIC_KEY, COMPDF_SECRET_KEY（只列名稱）\n")
 
 
 def test_log_masking(fake_keys):

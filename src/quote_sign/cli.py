@@ -44,18 +44,23 @@ def _cap(value: str) -> Decimal:
 
 
 def build_real_deps(args) -> Deps:
-    keys = secrets.require("MIX_ROUTE_API_KEY", "MIX_ROUTE_BASE_URL",
+    keys = secrets.require("MIX_ROUTE_SMART_ROUTING_KEY", "MIX_ROUTE_API_KEY", "MIX_ROUTE_BASE_URL",
                            "COMPDF_PUBLIC_KEY", "COMPDF_SECRET_KEY")
     # Round 2 supplies these adapters. Imports must follow secret validation.
     from .compdf import ComPdfClient
-    from .llm import MixRouteClient, SpendLedger
+    from .llm import MixRouteClient, PurposeRoutedClient, SpendLedger
+
+    ledger = SpendLedger(args.state_dir / "spend.json", cap_usd=args.spend_cap_usd)
+
+    def mixroute(api_key):
+        return MixRouteClient(base_url=keys["MIX_ROUTE_BASE_URL"], api_key=api_key,
+                              ledger=ledger, transport=None)
 
     return Deps(
         export=export_pdf,
         reader=ComPdfClient(api_key=keys["COMPDF_PUBLIC_KEY"], transport=None),
-        llm=MixRouteClient(base_url=keys["MIX_ROUTE_BASE_URL"], api_key=keys["MIX_ROUTE_API_KEY"],
-                           ledger=SpendLedger(args.state_dir / "spend.json", cap_usd=args.spend_cap_usd),
-                           transport=None),
+        llm=PurposeRoutedClient(extract=mixroute(keys["MIX_ROUTE_SMART_ROUTING_KEY"]),
+                                review=mixroute(keys["MIX_ROUTE_API_KEY"])),
         signer=RefusingSigner(), extract_model=args.extract_model, review_model=args.review_model,
         today=args.today, out_dir=args.out_dir,
     )
@@ -72,8 +77,8 @@ def main(argv=None) -> int:
         parser.add_argument("--out-dir", type=Path, default=Path("out"), help="PDF 輸出目錄。")
         parser.add_argument("--send", action="store_true", help="通過檢查後嘗試送簽。")
         parser.add_argument("--today", type=_iso_date, default=date.today(), metavar="YYYY-MM-DD", help="檢查基準日期。")
-        parser.add_argument("--extract-model", default="deepseek-v4-flash", help="抽欄位模型。")
-        parser.add_argument("--review-model", default="gpt-6-sol", help="審條款模型。")
+        parser.add_argument("--extract-model", default="auto", help="抽欄位模型（auto＝MixRoute Smart Routing）。")
+        parser.add_argument("--review-model", default="gpt-6-sol", help="審條款模型（指定模型，不走 auto）。")
         parser.add_argument("--state-dir", type=Path, default=Path(".quote-sign"), help="花費紀錄目錄。")
         parser.add_argument("--spend-cap-usd", type=_cap, default=Decimal("5"), help="美元花費上限。")
         args = parser.parse_args(argv)

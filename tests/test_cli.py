@@ -11,6 +11,7 @@ import pytest
 
 from quote_sign import cli, secrets
 from quote_sign.errors import QuoteSignError
+from quote_sign.llm import PurposeRoutedClient
 
 
 def test_missing_file(tmp_path, monkeypatch, capsys):
@@ -54,7 +55,7 @@ def test_defaults(sample_path, deps, monkeypatch):
     assert cli.main([str(sample_path)]) == 0
     args = captured[0]
     assert args.out_dir == Path("out") and args.state_dir == Path(".quote-sign")
-    assert args.extract_model == "deepseek-v4-flash" and args.review_model == "gpt-6-sol"
+    assert args.extract_model == "auto" and args.review_model == "gpt-6-sol"
     assert args.spend_cap_usd == Decimal(5) and not args.send
     assert isinstance(args.today, date)
 
@@ -66,6 +67,12 @@ def test_same_model_config_error(sample_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "build_real_deps", unexpected)
     assert cli.main([str(sample_path), "--extract-model", "same", "--review-model", "same"]) == 2
     assert "不同模型" in capsys.readouterr().err
+
+
+def test_auto_and_pinned_review_model_is_valid(sample_path, deps, monkeypatch):
+    monkeypatch.setattr(cli, "build_real_deps", lambda args: deps)
+    monkeypatch.setattr(cli, "run", lambda path, deps, send: 0)
+    assert cli.main([str(sample_path), "--extract-model", "auto", "--review-model", "gpt-6-sol"]) == 0
 
 
 @pytest.mark.parametrize("args", [[], ["--unknown"], ["q.md", "--today", "bad"],
@@ -124,25 +131,43 @@ def test_lazy_real_client_wiring(sample_path, monkeypatch, tmp_path):
     class MixRouteClient:
         def __init__(self, **kwargs):
             calls.append(("llm", kwargs))
+            self.kwargs = kwargs
 
     compdf = ModuleType("quote_sign.compdf")
     compdf.ComPdfClient = ComPdfClient
     llm = ModuleType("quote_sign.llm")
     llm.MixRouteClient = MixRouteClient
     llm.SpendLedger = SpendLedger
+    llm.PurposeRoutedClient = PurposeRoutedClient
     monkeypatch.setitem(sys.modules, "quote_sign.compdf", compdf)
     monkeypatch.setitem(sys.modules, "quote_sign.llm", llm)
     args = type("Args", (), {
         "state_dir": tmp_path, "spend_cap_usd": Decimal("2.5"), "out_dir": tmp_path / "out",
-        "extract_model": "cheap", "review_model": "strong", "today": date(2026, 11, 20),
+        "extract_model": "auto", "review_model": "strong", "today": date(2026, 11, 20),
     })()
     deps = cli.build_real_deps(args)
-    assert isinstance(deps.reader, ComPdfClient) and isinstance(deps.llm, MixRouteClient)
-    assert calls[0] == ("reader", {"api_key": "fake-COMPDF_PUBLIC_KEY", "transport": None})
-    assert calls[1] == ("ledger", tmp_path / "spend.json", {"cap_usd": Decimal("2.5")})
-    assert calls[2][1]["base_url"] == "fake-MIX_ROUTE_BASE_URL"
-    assert calls[2][1]["api_key"] == "fake-MIX_ROUTE_API_KEY"
-    assert calls[2][1]["transport"] is None
+    assert isinstance(deps.reader, ComPdfClient) and isinstance(deps.llm, PurposeRoutedClient)
+    assert isinstance(deps.llm.extract, MixRouteClient) and isinstance(deps.llm.review, MixRouteClient)
+    assert deps.llm.extract is not deps.llm.review
+    assert sorted(call[0] for call in calls) == ["ledger", "llm", "llm", "reader"]
+    assert ("reader", {"api_key": "fake-COMPDF_PUBLIC_KEY", "transport": None}) in calls
+    assert ("ledger", tmp_path / "spend.json", {"cap_usd": Decimal("2.5")}) in calls
+    extract, review = deps.llm.extract.kwargs, deps.llm.review.kwargs
+    assert extract["api_key"] == "fake-MIX_ROUTE_SMART_ROUTING_KEY"
+    assert review["api_key"] == "fake-MIX_ROUTE_API_KEY"
+    assert extract["base_url"] == review["base_url"] == "fake-MIX_ROUTE_BASE_URL"
+    assert extract["transport"] is None and review["transport"] is None
+    assert extract["ledger"] is review["ledger"]
+    assert (deps.extract_model, deps.review_model) == ("auto", "strong")
+
+
+def test_missing_smart_routing_key_reports_only_its_name(sample_path, monkeypatch, capsys):
+    for name in secrets.SECRET_NAMES:
+        monkeypatch.setenv(name, "fake-" + name)
+    monkeypatch.delenv("MIX_ROUTE_SMART_ROUTING_KEY")
+    assert cli.main([str(sample_path)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == "缺少環境變數：MIX_ROUTE_SMART_ROUTING_KEY（只列名稱）\n"
 
 
 def test_real_client_construction(monkeypatch, tmp_path):
@@ -151,6 +176,7 @@ def test_real_client_construction(monkeypatch, tmp_path):
     from quote_sign.pipeline import Deps
 
     for name, value in {
+        "MIX_ROUTE_SMART_ROUTING_KEY": "fake-smart-routing-key",
         "MIX_ROUTE_API_KEY": "fake-mixroute-key",
         "MIX_ROUTE_BASE_URL": "https://mix.example/v1",
         "COMPDF_PUBLIC_KEY": "fake-compdf-public",
@@ -160,10 +186,14 @@ def test_real_client_construction(monkeypatch, tmp_path):
     args = type("Args", (), {
         "state_dir": tmp_path / "state", "spend_cap_usd": Decimal("5"),
         "out_dir": tmp_path / "out", "today": date(2026, 11, 13),
-        "extract_model": "deepseek-v4-flash", "review_model": "gpt-6-sol",
+        "extract_model": "auto", "review_model": "gpt-6-sol",
     })()
     deps = cli.build_real_deps(args)
     assert isinstance(deps, Deps)
-    assert isinstance(deps.reader, ComPdfClient) and isinstance(deps.llm, MixRouteClient)
-    assert deps.llm.ledger.path == args.state_dir / "spend.json"
+    assert isinstance(deps.reader, ComPdfClient) and isinstance(deps.llm, PurposeRoutedClient)
+    assert isinstance(deps.llm.extract, MixRouteClient) and isinstance(deps.llm.review, MixRouteClient)
+    assert deps.llm.extract._api_key == "fake-smart-routing-key"
+    assert deps.llm.review._api_key == "fake-mixroute-key"
+    assert deps.llm.extract.ledger is deps.llm.review.ledger
+    assert deps.llm.extract.ledger.path == args.state_dir / "spend.json"
     assert not args.state_dir.exists()

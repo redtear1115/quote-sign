@@ -9,11 +9,13 @@
 - MCP：兩個官方開源 repo：https://github.com/ComPDFKit/compdf-mcp 、https://github.com/ComPDFKit/ComIDP-MCP-Server 。是 Python（3.10+）FastMCP 服務，Streamable HTTP（不是 stdio），要自己跑在本機或 Docker（預設綁 0.0.0.0:8000）。金鑰走 `X-ComPDF-API-Key` header；檔案用 base64 上傳（每檔 100 MB）；工具含 `document_parse`、`document_extract`、`pdf_to_json`、`pdf_to_csv`。它是同一批 REST API 的包裝。
 
 ## MixRoute
-- OpenAI 相容，base URL 見官方文件（程式從環境變數 MIX_ROUTE_BASE_URL 讀），一個 key 通用（https://mixroute.ai/docs/introduction）。模型名要和 Model Marketplace 一致，否則請求失敗。
-- Smart Routing（https://mixroute.ai/smart-routing/）：不是模型名。要在 MixRoute 主控台另外建一把「Smart Routing API key」，換掉原本的 key，請求格式不變；路由分 Simple／Complex／Ultra 三層，各 key 有自己的模型池；所有帳號免費可用，只付所選模型的用量。文件沒寫「回應裡哪個欄位告訴你選了哪個模型」。這就是 `GET /models` 清單裡看不到 smart／auto 的原因。
-- 文件沒寫回應有沒有花費欄位；實測沒有（見 spec-uncertainties.md）。
+- OpenAI 相容，base URL 見官方文件（程式從環境變數 MIX_ROUTE_BASE_URL 讀，兩把 key 共用）（https://mixroute.ai/docs/introduction）。一般 key 用來呼叫指定的模型，模型名要和 Model Marketplace 一致，否則請求失敗。Smart Routing 要用另一把 key（下一條）。
+- Smart Routing（https://mixroute.ai/smart-routing/）：不是模型名。要在 MixRoute 主控台另外建一把「Smart Routing API key」，請求格式不變；路由分 Simple／Complex／Ultra 三層，各 key 有自己的模型池；所有帳號免費可用，只付所選模型的用量。文件沒寫「回應裡哪個欄位告訴你選了哪個模型」。這就是 `GET /models` 清單裡看不到 smart／auto 的原因。
+- **本專案的用法（方案 B）**：兩把 key、兩條路徑。抽欄位：`POST /v1/chat/completions`，body `"model": "auto"`，Bearer 帶 `MIX_ROUTE_SMART_ROUTING_KEY`。審條款：同一個端點，Bearer 帶 `MIX_ROUTE_API_KEY`，`model` 指定 `gpt-6-sol`，不走 auto。兩邊共用同一份花費檔。程式讀回應的標準 `model` 欄位並印出，沒有就印 `auto`。2026-11-13 真實抽欄位一次：回應 `model=deepseek-v4-flash`。
+- 文件沒寫回應有沒有花費欄位；實測沒有（見 spec-uncertainties.md；一般 key 的指定模型呼叫）。Smart Routing 的回應沒實測過，程式一樣只在回應帶數字的 `usage.cost` 或 `cost` 時才標「實際」。
 - 價格（USD／百萬 token，輸入／輸出，https://mixroute.ai/models/ ，頁面標 Tiered 的是基本價）：deepseek-v4-flash 0.14／0.28；gpt-5-nano 0.05／0.40；gemini-3.5-flash-lite 0.30／1.20；gpt-6-sol 2.00／10.00；deepseek-v4-pro 1.74／3.48。
-- 這把 key 的 `GET /models` 實際看得到 25 個模型。抽欄位選 `deepseek-v4-flash`（DeepSeek；可用清單裡輸出單價最低（0.28；gpt-5-nano 輸入 0.05 較低但輸出 0.40，抽欄位輸出 token 比輸入多），實測可用）。審條款選 `gpt-6-sol`（OpenAI；與抽欄位不同供應商；這把 key 可用的非 DeepSeek 較強模型只有 gpt-5／gpt-6-sol，後者較新且單價 2／10）。
+- 一般 key 的 `GET /models` 實際看得到 25 個模型。審條款選 `gpt-6-sol`（OpenAI；這把 key 可用的非 DeepSeek 較強模型只有 gpt-5／gpt-6-sol，後者較新且單價 2／10）。抽欄位原本選 `deepseek-v4-flash`（可用清單裡輸出單價最低 0.28；gpt-5-nano 輸入 0.05 較低但輸出 0.40，抽欄位輸出 token 比輸入多），方案 B 改成 `auto`；`deepseek-v4-flash` 仍留在 `PRICES`，可用 `--extract-model` 指定（會連同 Smart Routing key 一起送出，該 key 的模型池是否允許指定模型沒驗證）。
+- `auto` 的花費估算：單價事前未知，`auto` 不在 `PRICES`。呼叫前用 `PRICES` 裡最貴的輸入單價與最貴的輸出單價（目前 gpt-6-sol 2.00／10.00）做最壞情況檢查；回應回報的 `model` 在 `PRICES` 內就用該模型單價估算，否則維持最貴單價。
 
 ## DottedSign（只讀文件；0 次呼叫）
 - Sandbox：註冊後用 https://sandbox.dottedsign.com ；限制：每 24 小時 20 個任務、每任務最多 5 個階段、PDF 加「Non official」浮水印、身分驗證關閉、資料每季第 1 天清空、Open API 應用程式每會員 3 個（https://developer.dottedsign.com/docs/01-welcome-dottedsign-api-07-sandbox）。API 網域 `api.sandbox.dottedsign.com` 在官方文件裡沒有直接寫出，來源是 spec（Ditto 11-13 實測）；文件 reference 頁寫的是 `https://api.dottedsign.com`。

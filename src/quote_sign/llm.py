@@ -11,7 +11,7 @@ import time
 from typing import Optional
 
 from .errors import BudgetExceeded, LlmError
-from .models import LlmResult
+from .models import LlmClient, LlmResult
 from .transport import Transport, UrllibTransport
 
 # Public MixRoute marketplace, read 2026-11-13. ONLY to ESTIMATE cost:
@@ -27,6 +27,8 @@ PRICES: dict[str, tuple[Decimal, Decimal]] = {
         ("gpt-6-sol", "2.00", "10.00"),
     )
 }
+# Smart Routing: the platform picks the model, so its price is unknown up front.
+AUTO_MODEL = "auto"
 
 
 def _amount(value) -> Decimal:
@@ -132,11 +134,15 @@ class MixRouteClient:
                 f"MixRoute 呼叫失敗：網路或回覆格式無效（{type(exc).__name__}）")) from None
 
     def _chat_json(self, model, purpose, system, user, max_tokens) -> LlmResult:
-        if model not in PRICES:
+        if model == AUTO_MODEL:
+            input_price = max(price[0] for price in PRICES.values())
+            output_price = max(price[1] for price in PRICES.values())
+        elif model in PRICES:
+            input_price, output_price = PRICES[model]
+        else:
             raise LlmError(self._redact(f"沒有 {model} 的單價，無法估算花費，拒絕呼叫"))
         if type(max_tokens) is not int or max_tokens <= 0:
             raise LlmError(self._redact("max_tokens 必須為正整數"))
-        input_price, output_price = PRICES[model]
         prompt_chars = len(system) + len(user)
         def cost_for(prompt, completion):
             return (prompt * input_price + completion * output_price) / Decimal(1_000_000)
@@ -174,6 +180,11 @@ class MixRouteClient:
             prompt = prompt_chars
         if type(completion) is not int or completion < 0:
             completion = max_tokens
+        actual_model = payload.get("model") or model
+        if not isinstance(actual_model, str):
+            actual_model = model
+        if model == AUTO_MODEL and actual_model in PRICES:
+            input_price, output_price = PRICES[actual_model]
         cost, estimate = cost_for(prompt, completion), True
         for reported in (usage.get("cost"), payload.get("cost")):
             if isinstance(reported, (int, float, Decimal)) and not isinstance(reported, bool):
@@ -182,9 +193,6 @@ class MixRouteClient:
                     break
                 except (ValueError, InvalidOperation):
                     pass
-        actual_model = payload.get("model") or model
-        if not isinstance(actual_model, str):
-            actual_model = model
         self.ledger.add(self._redact(actual_model), self._redact(purpose),
                         prompt, completion, cost, estimate)
         try:
@@ -206,3 +214,12 @@ class MixRouteClient:
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             raise LlmError(self._redact("模型回覆不是有效的 JSON")) from None
         return LlmResult(data, actual_model, prompt, completion, cost, estimate, seconds)
+
+
+class PurposeRoutedClient:
+    def __init__(self, extract: LlmClient, review: LlmClient):
+        self.extract, self.review = extract, review
+
+    def chat_json(self, *, purpose, **kwargs) -> LlmResult:
+        client = self.extract if purpose == "抽欄位" else self.review
+        return client.chat_json(purpose=purpose, **kwargs)
