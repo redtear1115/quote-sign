@@ -11,6 +11,7 @@ import pytest
 
 from quote_sign import cli, secrets
 from quote_sign.errors import QuoteSignError
+from quote_sign.input_file import InputDoc
 from quote_sign.llm import PurposeRoutedClient
 
 
@@ -25,13 +26,17 @@ def test_missing_file(tmp_path, monkeypatch, capsys):
 
 def test_arg_parsing(sample_path, deps, tmp_path, monkeypatch):
     captured = []
+    sources = []
 
     def build(args):
         captured.append(args)
         return deps
 
     monkeypatch.setattr(cli, "build_real_deps", build)
-    monkeypatch.setattr(cli, "run", lambda path, deps, send, **kwargs: 40 if send else 0)
+    def run(doc, deps, send, **kwargs):
+        sources.append(doc)
+        return 40 if send else 0
+    monkeypatch.setattr(cli, "run", run)
     out_dir = tmp_path / "pdf"
     monkeypatch.setenv("QUOTE_SIGN_BUYER_EMAIL", "buyer@example.invalid")
     monkeypatch.setenv("QUOTE_SIGN_SELLER_EMAIL", "seller@example.invalid")
@@ -41,6 +46,7 @@ def test_arg_parsing(sample_path, deps, tmp_path, monkeypatch):
                      "--extract-model", "extract", "--review-model", "review",
                      "--spend-cap-usd", "1.25"]) == 40
     args = captured[0]
+    assert sources == [InputDoc(sample_path.name, sample_path.read_bytes())]
     assert args.file == sample_path and args.out_dir == out_dir
     assert args.today == date(2026, 11, 21) and args.spend_cap_usd == Decimal("1.25")
     assert args.extract_model == "extract" and args.review_model == "review" and args.send

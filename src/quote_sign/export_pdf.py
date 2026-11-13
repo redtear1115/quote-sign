@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 
 from .errors import ExportError
+from .input_file import InputDoc
 
 
 @dataclass(frozen=True)
@@ -15,14 +18,26 @@ class ExportResult:
     diagram_errors: list[str]
 
 
-def export_pdf(md_path: Path, out_dir: Path, runner=subprocess.run) -> ExportResult:
+def export_pdf(doc: InputDoc, out_dir: Path, runner=subprocess.run) -> ExportResult:
     out_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = out_dir / (md_path.stem + ".pdf")
+    pdf_path = out_dir / (Path(doc.name).stem + ".pdf")
     try:
-        result = runner(
-            ["marsdawn", "export", str(md_path), "-o", str(pdf_path), "--force", "--json"],
-            capture_output=True, text=True, timeout=120,
-        )
+        with tempfile.TemporaryDirectory(prefix="quote-sign-src-") as private_dir:
+            private_copy = Path(private_dir) / doc.name
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+            fd = os.open(private_copy, flags, 0o600)
+            try:
+                remaining = memoryview(doc.data)
+                while remaining:
+                    written = os.write(fd, remaining)
+                    remaining = remaining[written:]
+            finally:
+                os.close(fd)
+            # marsdawn reads the checked bytes; relative images resolve in a folder containing only this Markdown file.
+            result = runner(
+                ["marsdawn", "export", str(private_copy), "-o", str(pdf_path), "--force", "--json"],
+                capture_output=True, text=True, timeout=120,
+            )
     except FileNotFoundError as exc:
         raise ExportError("找不到 marsdawn，請執行 brew install redtear1115/tap/marsdawn") from exc
     except (subprocess.SubprocessError, OSError) as exc:

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from quote_sign.export_pdf import ExportResult
+from quote_sign.input_file import InputDoc
 from quote_sign.models import LineItem, LlmResult, ParsedPdf, Quote
 from quote_sign.pipeline import Deps
 
@@ -79,8 +80,8 @@ class FakeExport:
         self.error = None
         self.warnings = []
 
-    def __call__(self, md_path, out_dir):
-        self.calls.append((md_path, out_dir))
+    def __call__(self, doc: InputDoc, out_dir):
+        self.calls.append((doc, out_dir))
         if self.error:
             raise self.error
         return ExportResult(out_dir / "from-export.pdf", 1, self.warnings)

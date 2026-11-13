@@ -5,12 +5,14 @@ from decimal import Decimal
 import pytest
 
 from quote_sign.errors import BudgetExceeded, ExportError, LlmError, PdfReadError, QuoteSignError
+from quote_sign.input_file import InputDoc
 from quote_sign.pipeline import run
 from quote_sign.sign import RefusingSigner
 
 
 def test_all_good(deps, sample_path, capsys):
     assert run(sample_path, deps) == 0
+    assert deps.export.calls == [(InputDoc(sample_path.name, sample_path.read_bytes()), deps.out_dir)]
     assert [c["model"] for c in deps.llm.calls] == ["cheap", "strong"]
     assert [c["purpose"] for c in deps.llm.calls] == ["抽欄位", "審條款"]
     assert all(c["user"] == deps.reader.parsed.markdown for c in deps.llm.calls)

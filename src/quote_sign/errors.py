@@ -5,6 +5,16 @@ class QuoteSignError(Exception):
     pass
 
 
+class InputRejected(QuoteSignError):
+    def __init__(self, category: str):
+        self.category = category
+        super().__init__(category)
+
+
+class InputNotFound(QuoteSignError):
+    pass
+
+
 class ExportError(QuoteSignError):
     pass
 

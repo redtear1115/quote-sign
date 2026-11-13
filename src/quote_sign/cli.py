@@ -7,8 +7,9 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from . import secrets
-from .errors import MissingSecretError, QuoteSignError, SigningNotConfigured, SigningError, SigningQuotaExceeded
+from .errors import InputNotFound, InputRejected, MissingSecretError, QuoteSignError, SigningNotConfigured, SigningError, SigningQuotaExceeded
 from .export_pdf import export_pdf
+from .input_file import EXIT_INPUT_REJECTED, load_markdown
 from .pipeline import Deps, run
 from .sign import RefusingSigner, DottedSignSigner, TaskLog
 from .paths import state_dir
@@ -135,7 +136,7 @@ def main(argv=None) -> int:
         parser._positionals.title = "位置參數"
         parser._optionals.title = "選項"
         parser.add_argument("-h", "--help", action="help", help="顯示用法後結束。")
-        parser.add_argument("file", type=Path, help="報價單 Markdown 路徑。")
+        parser.add_argument("file", help="報價單 Markdown 路徑。")
         parser.add_argument("--out-dir", type=Path, default=Path("out"), help="PDF 輸出目錄。")
         parser.add_argument("--send", action="store_true", help="通過檢查後嘗試送簽。")
         parser.add_argument("--today", type=_iso_date, default=date.today(), metavar="YYYY-MM-DD", help="檢查基準日期。")
@@ -145,11 +146,18 @@ def main(argv=None) -> int:
         parser.add_argument("--resend", action="store_true", help="搭配 --send 另建任務。")
         parser.add_argument("--spend-cap-usd", type=_cap, default=Decimal("5"), help="美元花費上限。")
         args = parser.parse_args(argv)
+        file_arg = args.file
+        args.file = Path(file_arg)
         if (args.dry_run or args.resend) and not args.send:
             parser.error("requires --send")
-        if not args.file.is_file():
-            secrets.emit_err(f"找不到檔案：{args.file}")
+        try:
+            doc = load_markdown(args.file)
+        except InputNotFound:
+            secrets.emit_err(f"找不到檔案：{file_arg}")
             return 2
+        except InputRejected as exc:
+            secrets.emit_err(f"輸入檔不符規則（{exc.category}）：{file_arg}")
+            return EXIT_INPUT_REJECTED
         if args.extract_model == args.review_model:
             secrets.emit_err("設定錯誤：抽欄位與審條款必須使用不同模型")
             return 2
@@ -157,7 +165,7 @@ def main(argv=None) -> int:
             secrets.require_signer_emails()
             if not args.dry_run:
                 secrets.require(*DOTTEDSIGN_NAMES)
-        return run(args.file, build_real_deps(args), send=args.send, dry_run=args.dry_run, resend=args.resend)
+        return run(doc, build_real_deps(args), send=args.send, dry_run=args.dry_run, resend=args.resend)
     except (MissingSecretError, SigningNotConfigured) as exc:
         secrets.emit_err(str(exc))
         return 2
