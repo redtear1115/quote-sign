@@ -187,7 +187,7 @@ def main(argv=None) -> int:
         secrets.emit_err("已中斷。")
         return 130
     except Exception as exc:
-        secrets.emit_err(f"未預期的錯誤：{type(exc).__name__}: {exc}")
+        secrets.emit_err(f"未預期的錯誤：{type(exc).__name__}")
         return 70
 
 

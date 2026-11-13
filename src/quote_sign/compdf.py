@@ -11,7 +11,7 @@ import zipfile
 
 from .errors import PdfReadError
 from .models import ParsedPdf
-from .transport import Transport, UrllibTransport
+from .transport import Transport, UrllibTransport, http_error_details
 
 MAX_PDF_BYTES = 20 * 1024 * 1024
 MAX_RESULT_BYTES = 25 * 1024 * 1024
@@ -74,6 +74,14 @@ class ComPdfClient:
     def _redact(self, text: str) -> str:
         return text.replace(self._api_key, "***") if self._api_key else text
 
+    @staticmethod
+    def _json(response):
+        try:
+            payload = json.loads(response.body)
+            return payload if isinstance(payload, dict) else {}
+        except (ValueError, UnicodeError, TypeError):
+            return {}
+
     def parse(self, pdf_path: Path) -> ParsedPdf:
         try:
             return self._parse(Path(pdf_path))
@@ -88,7 +96,7 @@ class ComPdfClient:
         with path.open("rb") as source:
             pdf = source.read(MAX_PDF_BYTES + 1)
         if len(pdf) > MAX_PDF_BYTES:
-            raise PdfReadError(self._redact("PDF 超過 20 MB"))
+            raise PdfReadError(self._redact("PDF 超過 20 MB")) from None
         boundary = uuid4().hex
         filename = path.name.replace('"', "_").replace("\\", "_").replace("\r", "_").replace("\n", "_")
         body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
@@ -101,34 +109,34 @@ class ComPdfClient:
         response = self._transport.request("POST", self._base_url + "/v2/process/idp/documentParsing",
                                           {"x-api-key": self._api_key, "Content-Type": content_type},
                                           body, self._timeout)
-        payload = json.loads(response.body)
-        data, code = payload.get("data") or {}, payload.get("code")
-        if not (response.status == 200 and str(code) == "200" and
+        if response.status != 200:
+            status, reason = http_error_details(response.status)
+            # The quota marker is the only body field that affects diagnostics.
+            code = self._json(response).get("code")
+            if code == "06001" or (type(code) is int and code == 6001):
+                reason = "免費額度用完"
+            raise PdfReadError(f"ComPDF 回覆失敗：HTTP {status}（{reason}）") from None
+        payload = self._json(response)
+        data, code = payload.get("data"), payload.get("code")
+        if not (str(code) == "200" and isinstance(data, dict) and
                 data.get("status") == "success" and data.get("downloadUrl")):
-            fields = [payload.get("msg", payload.get("message", "")),
-                      data.get("failureCode", ""), data.get("failureReason", "")]
-            msg = " ".join(str(v) for v in fields if isinstance(v, (str, int, float)))
-            if str(code) == "06001":
-                msg = "免費額度用完 " + msg
-            safe_code = code if isinstance(code, (str, int)) else "未知"
-            diagnostic = f"ComPDF 回覆失敗：HTTP {response.status} code={safe_code} msg={msg}"
-            for sensitive in (body.decode("utf-8", errors="replace"), content_type, "quote-sign/0.1"):
-                diagnostic = diagnostic.replace(sensitive, "***")
-            raise PdfReadError(self._redact(diagnostic))
+            reason = "免費額度用完" if code == "06001" or (type(code) is int and code == 6001) else "處理失敗"
+            raise PdfReadError(f"ComPDF 回覆失敗：HTTP 200（{reason}）") from None
         downloaded = self._transport.request("GET", data["downloadUrl"], {}, None, self._timeout)
         if downloaded.status != 200:
-            raise PdfReadError(self._redact(f"ComPDF 下載失敗：HTTP {downloaded.status}"))
+            status, _ = http_error_details(downloaded.status)
+            raise PdfReadError(f"ComPDF 下載失敗：HTTP {status}") from None
         content = downloaded.body
         if zipfile.is_zipfile(BytesIO(content)):
             with zipfile.ZipFile(BytesIO(content)) as archive:
                 member = next((i for i in archive.infolist()
                                if PurePosixPath(i.filename).name == "result_json.json"), None)
                 if member is None or member.file_size > MAX_RESULT_BYTES:
-                    raise PdfReadError(self._redact("ComPDF ZIP 缺少結果或結果超過大小限制"))
+                    raise PdfReadError(self._redact("ComPDF ZIP 缺少結果或結果超過大小限制")) from None
                 with archive.open(member) as source:
                     content = source.read(MAX_RESULT_BYTES + 1)
                 if len(content) > MAX_RESULT_BYTES:
-                    raise PdfReadError(self._redact("ComPDF 結果超過大小限制"))
+                    raise PdfReadError(self._redact("ComPDF 結果超過大小限制")) from None
         result = json.loads(content)["result"]
         paragraphs, tables, anchors = [], [], {}
         for item in result.get("detail", []):

@@ -11,6 +11,17 @@ from .errors import QuoteSignError
 MAX_RESPONSE_BYTES = 25 * 1024 * 1024
 
 
+def http_error_details(status: object) -> tuple[str, str]:
+    """Return diagnostics derived only from an integer HTTP status."""
+    if type(status) is not int:
+        return "?", "其他錯誤"
+    reasons = {
+        400: "請求無效", 401: "金鑰無效或未授權", 402: "額度不足", 403: "沒有權限",
+        404: "模型或端點不存在", 408: "逾時", 413: "請求過大", 429: "請求過多或額度用完",
+    }
+    return str(status), "服務端錯誤" if 500 <= status <= 599 else reasons.get(status, "其他錯誤")
+
+
 @dataclass(repr=False)
 class HttpResponse:
     status: int

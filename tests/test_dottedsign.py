@@ -97,7 +97,8 @@ def test_error_body_never_surfaced(fake_transport, caplog):
                   "error_message": EMAIL + CLIENT_SECRET + TOKEN, "email": EMAIL}, 400))
     with pytest.raises(SigningError) as caught:
         c.create_task({})
-    assert "400220" in str(caught.value) and "email_format_invalid" in str(caught.value)
+    assert "400220" not in str(caught.value) and "email_format_invalid" not in str(caught.value)
+    assert str(caught.value) == "DottedSign 請求失敗：HTTP 400（請求無效）"
     assert_private(caught.value)
     assert all(value not in caplog.text for value in (CLIENT_SECRET, TOKEN, EMAIL))
     assert len(t.calls) == 2
@@ -113,8 +114,9 @@ def test_error_key_allowlist(fake_transport, key):
 
 def test_403_no_retry(fake_transport):
     c, t = client(fake_transport, token(), reply({"error_code": 403032}, 403))
-    with pytest.raises(SigningQuotaExceeded, match="403032"):
+    with pytest.raises(SigningQuotaExceeded, match="HTTP 403（沒有權限）") as caught:
         c.create_task({})
+    assert "403032" not in str(caught.value)
     assert len([r for r in t.calls if r[1].endswith("/v1/sign_tasks")]) == 1
 
 

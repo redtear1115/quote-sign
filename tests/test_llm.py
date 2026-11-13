@@ -277,7 +277,8 @@ def test_http_failure_redacted(setup_client, error):
     client, ledger, _ = setup_client(HttpResponse(401, json.dumps({"error": error}).encode()))
     with pytest.raises(LlmError, match="HTTP 401") as caught:
         call(client)
-    assert KEY not in str(caught.value) and "***" in str(caught.value)
+    assert KEY not in str(caught.value) and "denied" not in str(caught.value)
+    assert str(caught.value) == "MixRoute 回覆失敗：HTTP 401（金鑰無效或未授權）"
     assert "x" * 201 not in str(caught.value)
     assert json.loads(ledger.path.read_text())["calls"][0]["pending"] and caught.value.__suppress_context__
 

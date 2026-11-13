@@ -75,7 +75,8 @@ def test_unexpected_client_exception_is_masked(name, fake_keys, deps, sample_pat
     assert cli.main([str(sample_path)]) == 70
     captured = capsys.readouterr()
     assert "未預期的錯誤：RuntimeError" in captured.err
-    assert "***" in captured.err
+    assert captured.err == "未預期的錯誤：RuntimeError\n"
+    assert "service failed" not in captured.err
     assert not any(value in captured.out + captured.err for value in fake_keys.values())
     assert "Traceback" not in captured.err
 

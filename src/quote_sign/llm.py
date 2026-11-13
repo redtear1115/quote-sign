@@ -16,7 +16,7 @@ from . import secrets
 from .storage import PrivateStore
 from .errors import BudgetExceeded, LlmError, LocalStateError
 from .models import LlmClient, LlmResult
-from .transport import Transport, UrllibTransport
+from .transport import Transport, UrllibTransport, http_error_details
 
 HARD_CAP_USD = Decimal("5")
 
@@ -222,22 +222,15 @@ class MixRouteClient:
                                            {"Authorization": "Bearer " + self._api_key,
                                             "Content-Type": "application/json"}, body, self._timeout)
         seconds = self._clock() - started
+        if response.status != 200:
+            status, reason = http_error_details(response.status)
+            raise LlmError(f"MixRoute 回覆失敗：HTTP {status}（{reason}）") from None
         try:
             payload = json.loads(response.body, parse_float=Decimal)
         except (ValueError, UnicodeError):
             payload = {}
         if not isinstance(payload, dict):
             payload = {}
-        if response.status != 200:
-            error = payload.get("error", "")
-            message = error.get("message", "") if isinstance(error, dict) else error
-            message = message if isinstance(message, str) else ""
-            for sensitive in (body.decode(), "Bearer " + self._api_key,
-                              "application/json", "quote-sign/0.1", system, user):
-                if sensitive:
-                    message = message.replace(sensitive, "***")
-            raise LlmError(self._redact(f"MixRoute 回覆失敗：HTTP {response.status} " +
-                                      self._redact(message)[:200]))
         usage = payload.get("usage") or {}
         if not isinstance(usage, dict):
             usage = {}

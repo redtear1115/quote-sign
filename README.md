@@ -54,6 +54,8 @@ python3 -m venv .venv
 
 ## 安全
 
+MixRoute、ComPDF 與 DottedSign 的錯誤訊息只顯示 HTTP 狀態與固定原因，絕不顯示回應內容。
+
 ### 輸入檔規則
 
 在檢查金鑰與信箱設定、建立任何服務連線、轉 PDF 之前，先檢查輸入檔。不符就印「輸入檔不符規則（原因）：<你輸入的路徑>」，退出碼 3。訊息只印你輸入的路徑，不印檔案內容，也不印連結指向哪裡。
@@ -137,7 +139,7 @@ Sandbox 每 24 小時限 20 個任務，本機保護門檻 15（含失敗與結�
 | 41 | DottedSign 本機或 API 配額用完 |
 | 42 | status 為 declined、expired、voided、deleted、unknown |
 | 43 | fetch 時尚未完成簽署 |
-| 70 | 未預期的錯誤（只印例外類型與遮罩後的訊息，不印 traceback） |
+| 70 | 未預期的錯誤（只印例外類型名稱，不印例外訊息或 traceback） |
 | 130 | 使用者中斷，無 traceback |
 
 ## 花費與上限

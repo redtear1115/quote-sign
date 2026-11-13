@@ -8,14 +8,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
-import re
 import time
 from typing import Optional
 from urllib.parse import urlencode, urlsplit
 
 from . import secrets
 from .errors import SigningError, SigningQuotaExceeded
-from .transport import TransportError, UrllibTransport
+from .transport import TransportError, UrllibTransport, http_error_details
 
 BASE_URL = "https://api.sandbox.dottedsign.com"
 TASK_STATES = frozenset(("draft", "waiting", "completed", "declined", "expired", "voided", "deleted"))
@@ -63,13 +62,8 @@ class DottedSignClient:
             return {}
 
     def _error(self, operation, response):
-        data = self._json(response)
-        message = f"DottedSign {operation}失敗：HTTP {response.status}"
-        if type(data.get("error_code")) is int:
-            message += f" error_code={data['error_code']}"
-        key = data.get("error_key")
-        if isinstance(key, str) and re.fullmatch(r"[a-z0-9_]{1,64}", key):
-            message += " error_key=" + key
+        status, reason = http_error_details(response.status)
+        message = f"DottedSign {operation}失敗：HTTP {status}（{reason}）"
         # 403 from the API means usage limit; 403 from the presigned storage URL
         # usually means the link expired, which is not a quota problem.
         error = SigningQuotaExceeded if response.status == 403 and operation != "下載" else SigningError
@@ -109,7 +103,8 @@ class DottedSignClient:
                 self._token = ""
                 refreshed = True
                 continue
-            if method == "GET" and (response.status == 429 or 500 <= response.status <= 599) and attempt < 2:
+            if (method == "GET" and type(response.status) is int and
+                    (response.status == 429 or 500 <= response.status <= 599) and attempt < 2):
                 attempt += 1
                 self._sleep(attempt)
                 continue
