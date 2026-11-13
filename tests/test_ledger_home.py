@@ -45,6 +45,7 @@ def account(monkeypatch, tmp_path):
 @pytest.fixture
 def no_services(monkeypatch):
     for name, value in {
+        "MIX_ROUTE_SMART_ROUTING_KEY": "fake-smart-routing-key",
         "MIX_ROUTE_API_KEY": "fake-mixroute-key",
         "MIX_ROUTE_BASE_URL": "https://mix.invalid/v1",
         "COMPDF_PUBLIC_KEY": "fake-compdf-public",
@@ -218,10 +219,13 @@ def test_unusable_ledger_stops_before_export(account, no_services, sample_path,
 
 def test_first_use_preflight_and_private_creation(account, no_services, tmp_path):
     args = SimpleNamespace(spend_cap_usd=Decimal("5"), send=False,
-                           extract_model="deepseek-v4-flash", review_model="gpt-6-sol",
+                           extract_model="auto", review_model="gpt-6-sol",
                            today=date(2026, 11, 13), out_dir=tmp_path / "out")
     deps = cli.build_real_deps(args)
-    ledger = deps.llm.ledger
+    ledger = deps.llm.extract.ledger
+    assert ledger is deps.llm.review.ledger
+    assert deps.llm.extract._api_key == "fake-smart-routing-key"
+    assert deps.llm.review._api_key == "fake-mixroute-key"
     assert ledger.path == account / ".quote-sign" / "spend.json"
     assert not ledger.path.exists()
     ledger.reserve("deepseek-v4-flash", "抽欄位", Decimal("0.01"))

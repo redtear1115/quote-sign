@@ -57,13 +57,12 @@ def build_real_deps(args) -> Deps:
     from .llm import MixRouteClient, PurposeRoutedClient, SpendLedger
 
     ledger = SpendLedger(state_dir() / "spend.json", cap_usd=args.spend_cap_usd)
+    ledger.check()
 
     def mixroute(api_key):
         return MixRouteClient(base_url=keys["MIX_ROUTE_BASE_URL"], api_key=api_key,
                               ledger=ledger, transport=None)
 
-    ledger = SpendLedger(state_dir() / "spend.json", cap_usd=args.spend_cap_usd)
-    ledger.check()
     return Deps(
         export=export_pdf,
         reader=ComPdfClient(api_key=keys["COMPDF_PUBLIC_KEY"], transport=None),

@@ -80,8 +80,15 @@ def test_same_model_config_error(sample_path, monkeypatch, capsys):
 
 def test_auto_and_pinned_review_model_is_valid(sample_path, deps, monkeypatch):
     monkeypatch.setattr(cli, "build_real_deps", lambda args: deps)
-    monkeypatch.setattr(cli, "run", lambda path, deps, send: 0)
+    calls = []
+
+    def run(doc, run_deps, *, send, dry_run, resend):
+        calls.append((run_deps, send, dry_run, resend))
+        return 0
+
+    monkeypatch.setattr(cli, "run", run)
     assert cli.main([str(sample_path), "--extract-model", "auto", "--review-model", "gpt-6-sol"]) == 0
+    assert calls == [(deps, False, False, False)]
 
 
 @pytest.mark.parametrize("args", [[], ["--unknown"], ["q.md", "--today", "bad"],
