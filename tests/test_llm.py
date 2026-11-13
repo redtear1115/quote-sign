@@ -102,16 +102,17 @@ def test_ledger_private_accumulation(setup_client):
     stored = json.loads(text)
     assert len(stored["calls"]) == 2
     for entry in stored["calls"]:
-        assert set(entry) == {"ts", "model", "purpose", "prompt_tokens", "completion_tokens", "cost_usd", "estimate"}
+        assert set(entry) == {"ts", "model", "purpose", "prompt_tokens", "completion_tokens", "cost_usd", "estimate", "id", "pending"}
         assert datetime.fromisoformat(entry["ts"]).utcoffset().total_seconds() == 0
-    assert list(ledger.path.parent.iterdir()) == [ledger.path]
+    assert set(ledger.path.parent.iterdir()) == {ledger.path, ledger.path.with_name("spend.lock")}
 
 
 @pytest.mark.parametrize("total,cap", [("5", "5"), ("5.1", "5"), ("0", "0.000001")])
 def test_budget_precheck(setup_client, total, cap):
     client, ledger, transport = setup_client(cap=cap)
     ledger.path.parent.mkdir(mode=0o700)
-    ledger.path.write_text(json.dumps({"total_usd": total, "calls": []}))
+    entry = ledger._entry(MODEL, "抽欄位", 0, 0, Decimal(total), True)
+    ledger.path.write_text(json.dumps({"total_usd": total, "calls": [entry]}))
     with pytest.raises(BudgetExceeded, match="累計花費已達上限"):
         call(client)
     assert not transport.calls
@@ -225,10 +226,14 @@ def test_corrupt_ledger_fail_closed(setup_client, text):
 
 
 def test_unreadable_ledger(setup_client, monkeypatch):
-    client, _, transport = setup_client()
+    import os
+    client, ledger, transport = setup_client()
+    original_open = os.open
     def denied(*args, **kwargs):
-        raise PermissionError(KEY)
-    monkeypatch.setattr(Path, "read_text", denied)
+        if args[0] == ledger.path:
+            raise PermissionError(KEY)
+        return original_open(*args, **kwargs)
+    monkeypatch.setattr("quote_sign.llm.os.open", denied)
     with pytest.raises(LlmError) as caught:
         call(client)
     assert KEY not in str(caught.value) and not transport.calls
@@ -272,9 +277,10 @@ def test_http_failure_redacted(setup_client, error):
     client, ledger, _ = setup_client(HttpResponse(401, json.dumps({"error": error}).encode()))
     with pytest.raises(LlmError, match="HTTP 401") as caught:
         call(client)
-    assert KEY not in str(caught.value) and "***" in str(caught.value)
+    assert KEY not in str(caught.value) and "denied" not in str(caught.value)
+    assert str(caught.value) == "MixRoute 回覆失敗：HTTP 401（金鑰無效或未授權）"
     assert "x" * 201 not in str(caught.value)
-    assert not ledger.path.exists() and caught.value.__suppress_context__
+    assert json.loads(ledger.path.read_text())["calls"][0]["pending"] and caught.value.__suppress_context__
 
 
 def test_http_error_does_not_echo_prompt_or_raw_body(setup_client):
@@ -309,7 +315,8 @@ def test_network_error_redacted(setup_client):
     client, ledger, _ = setup_client(TransportError(KEY))
     with pytest.raises(LlmError) as caught:
         call(client)
-    assert KEY not in str(caught.value) and not ledger.path.exists()
+    assert KEY not in str(caught.value)
+    assert json.loads(ledger.path.read_text())["calls"][0]["pending"]
 
 
 def test_insecure_base_url_refused(tmp_path):
@@ -328,7 +335,7 @@ def test_atomic_failure_preserves_previous_ledger(setup_client, monkeypatch):
         call(client)
     assert KEY not in str(caught.value)
     assert ledger.path.read_bytes() == original
-    assert list(ledger.path.parent.iterdir()) == [ledger.path]
+    assert set(ledger.path.parent.iterdir()) == {ledger.path, ledger.path.with_name("spend.lock")}
 
 
 def test_prices_exact():
@@ -337,3 +344,66 @@ def test_prices_exact():
         (MODEL, "0.14", "0.28"), ("deepseek-v4-pro", "1.74", "3.48"),
         ("gpt-5-nano", "0.05", "0.40"), ("gpt-5-mini", "0.25", "2.00"),
         ("gemini-3.5-flash-lite", "0.30", "1.20"), ("gpt-6-sol", "2.00", "10.00")]}
+
+
+def _reserve_worker(path, count):
+    ledger = SpendLedger(Path(path), Decimal("5"))
+    for _ in range(count):
+        ledger.reserve(MODEL, "offline", Decimal("0.01"))
+
+
+def test_reserve_and_settle_arithmetic(tmp_path):
+    ledger = SpendLedger(tmp_path / "spend.json", Decimal(5))
+    first = ledger.reserve(MODEL, "first", Decimal("1.2"))
+    ledger.reserve(MODEL, "second", Decimal(".3"))
+    assert ledger.total() == Decimal("1.5")
+    ledger.settle(first, MODEL, 100, 50, Decimal(".2"), True)
+    assert ledger.total() == Decimal(".5")
+    rows = json.loads(ledger.path.read_text())["calls"]
+    assert rows[0]["pending"] is False and rows[1]["pending"] is True
+    with pytest.raises(LlmError):
+        ledger.settle(first, MODEL, 0, 0, Decimal(0), True)
+
+
+def test_hard_cap_in_ledger(tmp_path):
+    with pytest.raises(LlmError):
+        SpendLedger(tmp_path / "spend.json", Decimal("5.01"))
+
+
+@pytest.mark.parametrize("error", [TransportError("fake-offline-failure"), TimeoutError(), KeyboardInterrupt()])
+def test_failed_call_keeps_worst_case_reservation(setup_client, error):
+    client, ledger, transport = setup_client(error)
+    expected = KeyboardInterrupt if isinstance(error, KeyboardInterrupt) else LlmError
+    with pytest.raises(expected):
+        call(client)
+    worst = ((len(SYSTEM)+len(USER))*Decimal(".14")+600*Decimal(".28"))/1_000_000
+    assert ledger.total() == worst
+    assert json.loads(ledger.path.read_text())["calls"][0]["pending"] is True
+    assert len(transport.calls) == 1
+
+
+def test_multiprocess_reservations_lose_no_entries(tmp_path):
+    import multiprocessing
+    path = tmp_path / "spend.json"
+    ctx = multiprocessing.get_context("spawn")
+    processes = [ctx.Process(target=_reserve_worker, args=(str(path), 8)) for _ in range(4)]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(20)
+        assert process.exitcode == 0
+    ledger = SpendLedger(path, Decimal(5))
+    data = json.loads(path.read_text())
+    assert len(data["calls"]) == len({e["id"] for e in data["calls"]}) == 32
+    assert ledger.total() == sum((Decimal(e["cost_usd"]) for e in data["calls"]), Decimal(0)) == Decimal(".32")
+
+
+@pytest.mark.parametrize("extra", [{"pending": "true"}, {"id": 1}, {"id": ""}])
+def test_invalid_reservation_metadata(tmp_path, extra):
+    ledger = SpendLedger(tmp_path / "spend.json", Decimal(5))
+    ledger.reserve(MODEL, "offline", Decimal(".1"))
+    data = json.loads(ledger.path.read_text())
+    data["calls"][0].update(extra)
+    ledger.path.write_text(json.dumps(data))
+    with pytest.raises(LlmError):
+        ledger.total()

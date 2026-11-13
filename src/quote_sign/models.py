@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional, Protocol
@@ -35,6 +35,7 @@ class ParsedPdf:
     paragraphs: list[str]
     tables: list[list[list[str]]]
     page_count: int
+    anchors: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
