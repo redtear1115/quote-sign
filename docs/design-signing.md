@@ -1,6 +1,6 @@
 # 第 4～5 步：送簽與追蹤（DottedSign sandbox）
 
-狀態：**已實作**。自動測試全程離線（假 transport）。2026-11-13 用正確範例在 sandbox 建了 1 個真實任務，只寄給兩個測試信箱，停在「已建立、等待簽署」；簽完後的下載與簽署紀錄尚未實測。
+狀態：已實作，隨本整合 PR 帶入 main。歷史任務 407 已由 Ray 簽完，status／fetch 皆退出 0；證據與版本界線見 [README](../README.md)。本次未重跑外部服務，尚未收到邀請信。
 
 ## 設定與安全邊界
 
@@ -67,7 +67,7 @@ ComPDF 的段落文字去除空白後，以「買方簽署」或「賣方簽署�
 
 ## API 事實來源
 
-依官方文件實作，並在 sandbox 實測 token、建任務與查任務（2026-11-13）。實測發現：建任務後立刻查是 `draft`（兩階段都是 initial），約 10 多秒後變 `waiting`（買方 processing、賣方 initial），DottedSign 處理完檔案才開始寄信。
+依官方文件實作，並在 sandbox 實測 token、建任務與查任務（2026-11-13）。實測發現：建任務後立刻查是 `draft`（兩階段都是 initial），約 10 多秒後變 `waiting`（買方 processing、賣方 initial），這只能證明任務開始等待簽署，不能證明寄信；後續驗收確認 `informable=false` 未寄信，Ray 以 share link 完成（見 README）。
 
 - [建立任務](https://developer.dottedsign.com/reference/createsigntask)
 - [查任務](https://developer.dottedsign.com/reference/getsigntask.md)

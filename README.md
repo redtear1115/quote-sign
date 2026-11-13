@@ -4,7 +4,15 @@ Markdown 報價單 → PDF → AI 檢查 → 送簽 → 追蹤。
 
 OPEN LAB AI 實作挑戰賽（2026）的參賽作品，開發中。規格見 [`docs/spec.md`](docs/spec.md)。
 
-**第 1～5 步已實作**：轉 PDF、讀 PDF、三層檢查、DottedSign sandbox 送簽、追蹤與取回已簽 PDF。第 4～5 步的自動測試用離線假 transport；另用正確範例在 sandbox 建過 1 個真實任務（只寄給測試信箱，停在等待簽署）。細節見 [`docs/design-signing.md`](docs/design-signing.md)。
+**本整合 PR 合併至 main 後提供第 1～5 步**：轉 PDF、讀 PDF、三層檢查、DottedSign sandbox 送簽、追蹤與取回已簽 PDF。基準 main `e88b0e7` 只有第 1～3 步；本分支以正常 merge 帶入已驗 #3 `cb721815`，沒有額外產品碼修改。設計見 [`docs/design-signing.md`](docs/design-signing.md)。
+
+**歷史真實驗收**：[任務 407 證據](https://github.com/redtear1115/quote-sign/pull/3#issuecomment-6852364063) 屬 `a33459e1c560b830688eb1a38468710ce0ae6ec9`，不是本次整合 head 重跑。Ray 已完成買方、賣方簽署（兩方 `done`），`completed_at=2026-11-13T20:03:30+08:00`；`status`／`fetch` 都退出 0，已取回 `out/signed/Q2026-031-signed.pdf`（560k、0600、`%PDF-1.7`）與 `signed-log.jsonl`。本次只做離線測試，不查真 API、不變更 407。
+
+**簽署信限制**：原 #1「收到簽署信」尚未達成。`informable=false`，歷史任務未寄簽署邀請；Ray 使用 share link 先買方、再賣方完成。分享連結不代表收到信。Ray 決定先不改、不另建任務；本 PR 保留此限制。
+
+## Claude Code skill
+
+入口：[`skills/quote-sign/SKILL.md`](skills/quote-sign/SKILL.md)。請 Claude Code 讀取此 repo 內 skill，依其批准關卡操作。沒有安裝到全域，也不改其他 bot 設定。文件命令是操作說明，不是執行授權。
 
 ## 做什麼
 
@@ -18,7 +26,7 @@ OPEN LAB AI 實作挑戰賽（2026）的參賽作品，開發中。規格見 [`d
    - **算數（純程式，Decimal，不用模型）**：每列 數量×單價＝小計；小計加總＝未稅合計；營業稅＝未稅合計×稅率（四捨五入到元）；含稅總計＝未稅合計＋稅額；有效期限未過、有效期限不早於報價日期、交付日期不早於報價日期、必要欄位都在。
    - **兩邊讀法比對**：ComPDF 表格與文字的規則式讀法 vs 模型抽到的欄位，逐欄比對；不一致就逐項列出「ComPDF 讀到 X，模型讀到 Y」，不會默默採用任何一邊。算數檢查兩邊各跑一次。
    - **審條款**（指定較強的模型，預設 `gpt-6-sol`，用一般 MixRoute key，**不走 auto**）：付款條件、交付日期、條款之間有沒有矛盾或缺漏。只有「條款互相矛盾，或付款條件／交付日期缺漏、含糊、不可能」才會擋（blocker），其餘寫成備註。前面算數或比對已經不過時，這一步不執行（省錢）。
-4. **送簽**：`--send` 在檢查通過後建立 sandbox 任務，依序通知買方、賣方；簽名由收件人完成，本工具永不代簽。
+4. **送簽**：`--send` 在檢查通過後建立 sandbox 任務，簽署順序買方、賣方（目前不寄邀請信）；簽名由收件人完成，本工具永不代簽。
 5. **追蹤與取回**：獨立 `status` / `fetch` 指令查狀態、下載已簽 PDF 並寫入「誰、何時、哪一版」紀錄。
 
 每次呼叫模型都會印出 MixRoute **回應裡回報的模型名稱**（抽欄位走 `auto` 時，印的就是平台選到的模型；回應沒帶就印 `auto`）、token 數與花費（「估算」或「實際」），並累計寫入 `~/.quote-sign/spend.json`。抽欄位與審條款共用同一份花費檔。
@@ -94,29 +102,31 @@ MixRoute、ComPDF 與 DottedSign 的錯誤訊息只顯示 HTTP 狀態與固定�
 ```sh
 quote-sign sample/quote-Q2026-031.md                    # 第 1～3 步
 quote-sign sample/quote-Q2026-031-bad.md                # 抓錯情境
-quote-sign <檔.md> --today 2026-11-13                   # 指定「今天」（檢查有效期限用）
-quote-sign <檔.md> --send                               # 通過後建立 sandbox 任務
+quote-sign sample/quote-Q2026-031.md --today 2026-11-20 # 只重現歷史假資料檢查
+quote-sign sample/quote-Q2026-031.md --send # 人類批准後，通過才建立 sandbox 任務
 ```
 
 選項：`--out-dir`（預設 `out`）、`--extract-model`（預設 `auto`，MixRoute Smart Routing）、`--review-model`（預設 `gpt-6-sol`；必須與抽欄位不同模型，`auto` 與 `gpt-6-sol` 算不同）、`--spend-cap-usd`（0～5，預設 5）、`--today`、`--send`、`--dry-run`、`--resend`。後兩者必須搭配 `--send`。狀態固定存放於 `~/.quote-sign/`（家目錄由目前 uid 向系統帳號資料庫（pwd）查詢，不使用 `HOME` 環境變數），不提供自訂位置。
-除了 `auto`，模型必須在 `src/quote_sign/llm.py` 的 `PRICES` 有單價（用來估算花費），沒有就拒絕呼叫。`--extract-model` 指定的值會連同 Smart Routing key 一起送出，`--review-model` 的值連同一般 key 一起送出；審條款不要設成 `auto`。報價單的有效期限若已過，檢查會不過；錄影日期晚於 2026-12-05 時請加 `--today`。
+除了 `auto`，模型必須在 `src/quote_sign/llm.py` 的 `PRICES` 有單價（用來估算花費），沒有就拒絕呼叫。`--extract-model` 指定的值會連同 Smart Routing key 一起送出，`--review-model` 的值連同一般 key 一起送出；審條款不要設成 `auto`。報價單的有效期限若已過，檢查會不過；錄影日期晚於 2026-12-05 時若只需重現歷史假資料檢查，可加 `--today 2026-11-20`；不得用它繞過真實送簽的到期檢查。
 
 ## 第 4～5 步：sandbox 送簽、追蹤與下載
+
+以下是命令範本，`TASK_ID` 換成本次獲准任務的正整數 ID；不代表現在有權執行或操作既有 407。先依 skill 取得明確批准；本次文件交付不執行這些命令。
 
 ```sh
 quote-sign sample/quote-Q2026-031.md --send --dry-run
 quote-sign sample/quote-Q2026-031.md --send
-quote-sign status <task_id>
-quote-sign status <task_id> --watch 10
-quote-sign fetch <task_id>
-quote-sign fetch <task_id> --out-dir out
+quote-sign status TASK_ID
+quote-sign status TASK_ID --watch 10
+quote-sign fetch TASK_ID
+quote-sign fetch TASK_ID --out-dir out
 ```
 
-Dry-run 會跑第 1～3 步（仍會呼叫 ComPDF 與 MixRoute），通過後印完整 DottedSign 請求形狀，信箱遮罩、PDF base64 省略；不建立 DottedSign client、不寫任務紀錄、不寄信。真正送簽需要兩個 DottedSign 變數。API 網域固定 sandbox，不能改到 production。
+Dry-run 會跑第 1～3 步（仍會呼叫 ComPDF 與 MixRoute），通過後印完整 DottedSign 請求形狀，信箱遮罩、PDF base64 省略；不建立 DottedSign client、不寫任務紀錄、不寄信。送出前必須取得人類對本次假資料版本、兩個已核准測試收件人及額度的明確批准；dry-run 不等於批准。真正送簽需要兩個 DottedSign 變數。API 網域固定 sandbox，不能改到 production。
 
-買方先簽、賣方後簽；**本工具永不代簽**。Sandbox PDF 有 **Non official** 浮水印。簽名欄由 ComPDF 讀到的兩行簽署位置換算，位置缺失即停。文件中的簽署人顯示名稱若含信箱或 `@`，或不是字串，會拒絕送簽（含 dry-run），退出碼 40。同一報價單號與 Markdown 版本已有 `created` 任務時會沿用；只有加 `--resend` 才另建。若上一次結果為 `unknown`（沒有 task_id），會停止並退出 40，請先到 DottedSign web UI 或用 `quote-sign status` 檢查，確認沒有建立任務後再加 `--resend`。
+買方先簽、賣方後簽；**本工具永不代簽**。Sandbox PDF 有 **Non official** 浮水印。簽名欄由 ComPDF 讀到的兩行簽署位置換算，位置缺失即停。文件中的簽署人顯示名稱若含信箱或 `@`，或不是字串，會拒絕送簽（含 dry-run），退出碼 40。同一報價單號與 Markdown 版本已有 `created` 任務時會沿用；只有加 `--resend` 才另建。若上一次結果為 `unknown`（沒有 task_id），會停止並退出 40，請先到 DottedSign web UI 或用 `quote-sign status` 檢查，確認結果後回報人類決定；不得自行使用 `--resend`，既有 407 不重建或重送。
 
-Sandbox 每 24 小時限 20 個任務，本機保護門檻 15（含失敗與結果不明的嘗試）。403 立即停止。建立任務遇 429、5xx、網路逾時不自動重試；可能已建立時先用 `status` 或 DottedSign web UI 確認，再決定是否重送。GET 最多三次，等待 1、2 秒；401 更新 token 後重試一次。
+Sandbox 每 24 小時限 20 個任務，本機保護門檻 15（含失敗與結果不明的嘗試）。403 立即停止。建立任務遇 429、5xx、網路逾時不自動重試；可能已建立時先回報人類，由人類核對既有任務；不得自動重送。GET 最多三次，等待 1、2 秒；401 更新 token 後重試一次。
 
 `--watch N` 接受 1～20，每 30 秒查詢，遇最終狀態提早停止。`fetch` 只下載 completed 任務，寫入 `<out-dir>/signed/<quote_no>-signed.pdf`，並追加及印出一行 `signed-log.jsonl`：角色、顯示名稱、完成時間（UTC+8）、來源 Markdown／送簽 PDF／已簽 PDF 雜湊；不存信箱或下載連結。沒有本機任務紀錄時，檔名使用 `task-<id>-signed.pdf`，未知名稱與來源版本記為 null。
 
@@ -160,7 +170,7 @@ Sandbox 每 24 小時限 20 個任務，本機保護門檻 15（含失敗與結�
 1. **ComPDF 讀表格準不準**：用的是 REST API（Document Parsing，`x-api-key` 帶 Public Key），沒有實測 MCP。MCP 是官方開源、要自己在本機跑的服務（Python、HTTP），底層是同一批 REST 端點，所以未驗證 MCP（要起本機服務，且沒有額外價值）。範例報價單（繁中，1 頁 A4）的 4 欄×3 列品項表、合計、買賣方、日期、條款全部讀對，千分位數字逐格一致；差別只有全形括號變半形。表格以 HTML 輸出，不必退回「讀純文字再由 AI 解析」。每頁約 3～7 秒。
    - 文件與實際不符：文件說 documentParsing 直接回 JSON；實際回任務資訊與預簽 `downloadUrl`，下載到的是 zip（內有 `result_json.json`）。程式兩種都接，zip 只在記憶體裡開，下載網址不帶 API key。
    - 免費額度：文件寫線上平台每月 40 頁免費；API 端數字沒寫。這一輪用了 4 頁。
-2. **DottedSign 能不能上傳本機 PDF、指定簽名欄位置**：依官方 REST 文件，可以（`base64_file`；簽名欄位用頁碼加 `coord` 座標；`search_key` 不支援簽名欄位）。已完成 sandbox client 與離線測試；2026-11-13 用正確範例建了 1 個真實任務，查到 `waiting`（買方簽署中）。收件人簽完後的下載尚未實測。DottedSign MCP 找不到官方文件，沒評估。
+2. **DottedSign 能不能上傳本機 PDF、指定簽名欄位置**：依官方 REST 文件，可以（`base64_file`；簽名欄位用頁碼加 `coord` 座標；`search_key` 不支援簽名欄位）。已完成 sandbox client 與離線測試；2026-11-13 任務 407 已由 Ray 透過 share link 依序簽完，歷史 status／fetch 皆退出 0（證據與版本見本文開頭），未收到邀請信。本次整合未重跑外部服務。DottedSign MCP 找不到官方文件，沒評估。
 3. **兩個 MCP 的官方設定文件**：ComPDF MCP 已讀；DottedSign 只有第三方目錄。重點與出處見 [`docs/service-notes.md`](docs/service-notes.md)。
 4. **MixRoute Smart Routing**：它是另一種 API key（要在 MixRoute 主控台建「Smart Routing key」），不是模型名，所以 `GET /models` 的清單裡沒有 smart／auto。**方案 B（本版）**：抽欄位預設 `POST /v1/chat/completions`、`"model": "auto"`、Bearer 帶 `MIX_ROUTE_SMART_ROUTING_KEY`；審條款仍用一般 `MIX_ROUTE_API_KEY` 加指定的 `gpt-6-sol`，不走 auto。程式讀回應標準 `model` 欄位並印出。2026-11-13 已打一次真實抽欄位（只打抽欄位，沒打審條款）：回應 `model=deepseek-v4-flash`，輸入 496／輸出 415，花費估算 US$0.000186，約 4.4 秒。金鑰沒印。
 5. **MixRoute 模型與價格**：這把 key 的 `GET /models` 有 25 個模型；回應只有 `usage` token 數，沒有花費欄位，回應的 `model` 等於請求的模型名。deepseek 是 reasoning 模型，輸出 token 包含思考 token，`max_tokens` 要給寬。
@@ -223,11 +233,14 @@ CI：`.github/workflows/ci.yml` 在每個 PR 和推到 main 時，用 GitHub 代
 
 涵蓋：輸入檔規則（副檔名、檔案或目錄是符號連結、`..`、目錄／FIFO／裝置檔、硬連結、檢查後換檔仍用檢查過的內容、拒絕時不建立任何服務）、算數（全對、第 2 列小計應為 15,000、加總／稅額／總計、全形數字、千分位、空列、小數）、停下邏輯（任一層不過 → 非 0、signer 沒被呼叫、兩邊不一致有標出）、花費上限（含 `auto` 的最壞情況與回報模型的估價）、兩把 MixRoute key 各走各的路徑（抽欄位 → Smart Routing key＋`auto`，審條款 → 一般 key＋指定模型）、金鑰保護（假值不出現在 `--help`、失敗路徑、例外路徑、log；缺變數只報名稱；原始碼裡除 `secrets.py` 外沒人碰環境變數）、外部呼叫用假的 transport（斷言 header 名稱 `x-api-key`、下載請求沒帶 key、不跟隨重新導向）。
 
-## 尚未完成
+## 驗收狀態與剩餘工作
 
-- 真實 sandbox 收件人簽署後的 `fetch`（下載已簽 PDF、寫簽署紀錄）：任務已建立、等待收件人簽署，簽完後才能實測。
-- Claude Code skill（子任務「skill 與 README」的 skill 部分）。
-- 另一家模型驗證（子任務）。
+- [x] 第 1～5 步產品實作：帶入已驗 #3；此 PR 尚待合併。
+- [x] 歷史任務 407 人類簽署、status、fetch 與簽署紀錄：見本文開頭證據，非本次重跑。
+- [x] repo 內 Claude Code skill 與 README 操作入口。
+- [ ] 原 #1「收到簽署信」：`informable=false`，保留 Ray 先不改、不另建任務的決定。
+- [ ] 另一位 Dev 獨立確認新整合與文件增量；本輪不自判 CONFIRMED。
+- [ ] 完整錄影驗收與影片交付；既有簽署／下載不重做，錄影是否足夠由派工方驗收。
 
 ## 限制
 
