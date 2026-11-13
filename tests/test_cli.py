@@ -9,7 +9,7 @@ from types import ModuleType
 
 import pytest
 
-from quote_sign import cli, secrets
+from quote_sign import cli, paths, secrets
 from quote_sign.errors import QuoteSignError
 from quote_sign.input_file import InputDoc
 from quote_sign.llm import PurposeRoutedClient
@@ -137,6 +137,9 @@ def test_lazy_real_client_wiring(sample_path, monkeypatch, tmp_path):
         def __init__(self, path, **kwargs):
             calls.append(("ledger", path, kwargs))
 
+        def check(self):
+            calls.append(("check",))
+
     class MixRouteClient:
         def __init__(self, **kwargs):
             calls.append(("llm", kwargs))
@@ -158,9 +161,10 @@ def test_lazy_real_client_wiring(sample_path, monkeypatch, tmp_path):
     assert isinstance(deps.reader, ComPdfClient) and isinstance(deps.llm, PurposeRoutedClient)
     assert isinstance(deps.llm.extract, MixRouteClient) and isinstance(deps.llm.review, MixRouteClient)
     assert deps.llm.extract is not deps.llm.review
-    assert sorted(call[0] for call in calls) == ["ledger", "llm", "llm", "reader"]
-    assert ("reader", {"api_key": "fake-COMPDF_PUBLIC_KEY", "transport": None}) in calls
+    assert sorted(call[0] for call in calls) == ["check", "ledger", "llm", "llm", "reader"]
     assert ("ledger", Path.home() / ".quote-sign" / "spend.json", {"cap_usd": Decimal("2.5")}) in calls
+    assert ("check",) in calls
+    assert ("reader", {"api_key": "fake-COMPDF_PUBLIC_KEY", "transport": None}) in calls
     extract, review = deps.llm.extract.kwargs, deps.llm.review.kwargs
     assert extract["api_key"] == "fake-MIX_ROUTE_SMART_ROUTING_KEY"
     assert review["api_key"] == "fake-MIX_ROUTE_API_KEY"
@@ -284,7 +288,7 @@ def test_signer_factory_is_lazy_and_fixed_log_location(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "build_signing_client", lambda: pytest.fail("Must be lazy"))
     signer = cli.build_signer(SimpleNamespace(send=True, dry_run=True))
     assert isinstance(signer, DottedSignSigner)
-    assert signer.task_log.path == Path.home() / ".quote-sign" / "sign-tasks.jsonl"
+    assert signer.task_log.path == paths.state_dir() / "sign-tasks.jsonl"
     assert not signer.task_log.path.parent.exists()
 
 

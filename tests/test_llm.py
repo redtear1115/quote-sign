@@ -111,7 +111,8 @@ def test_ledger_private_accumulation(setup_client):
 def test_budget_precheck(setup_client, total, cap):
     client, ledger, transport = setup_client(cap=cap)
     ledger.path.parent.mkdir(mode=0o700)
-    ledger.path.write_text(json.dumps({"total_usd": total, "calls": []}))
+    entry = ledger._entry(MODEL, "抽欄位", 0, 0, Decimal(total), True)
+    ledger.path.write_text(json.dumps({"total_usd": total, "calls": [entry]}))
     with pytest.raises(BudgetExceeded, match="累計花費已達上限"):
         call(client)
     assert not transport.calls
@@ -225,10 +226,14 @@ def test_corrupt_ledger_fail_closed(setup_client, text):
 
 
 def test_unreadable_ledger(setup_client, monkeypatch):
-    client, _, transport = setup_client()
+    import os
+    client, ledger, transport = setup_client()
+    original_open = os.open
     def denied(*args, **kwargs):
-        raise PermissionError(KEY)
-    monkeypatch.setattr(Path, "read_text", denied)
+        if args[0] == ledger.path:
+            raise PermissionError(KEY)
+        return original_open(*args, **kwargs)
+    monkeypatch.setattr("quote_sign.llm.os.open", denied)
     with pytest.raises(LlmError) as caught:
         call(client)
     assert KEY not in str(caught.value) and not transport.calls

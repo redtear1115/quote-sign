@@ -94,7 +94,7 @@ quote-sign <檔.md> --today 2026-11-13                   # 指定「今天」（
 quote-sign <檔.md> --send                               # 通過後建立 sandbox 任務
 ```
 
-選項：`--out-dir`（預設 `out`）、`--extract-model`（預設 `auto`，MixRoute Smart Routing）、`--review-model`（預設 `gpt-6-sol`；必須與抽欄位不同模型，`auto` 與 `gpt-6-sol` 算不同）、`--spend-cap-usd`（0～5，預設 5）、`--today`、`--send`、`--dry-run`、`--resend`。後兩者必須搭配 `--send`。狀態固定存放於 `~/.quote-sign/`，不提供自訂位置。
+選項：`--out-dir`（預設 `out`）、`--extract-model`（預設 `auto`，MixRoute Smart Routing）、`--review-model`（預設 `gpt-6-sol`；必須與抽欄位不同模型，`auto` 與 `gpt-6-sol` 算不同）、`--spend-cap-usd`（0～5，預設 5）、`--today`、`--send`、`--dry-run`、`--resend`。後兩者必須搭配 `--send`。狀態固定存放於 `~/.quote-sign/`（家目錄由目前 uid 向系統帳號資料庫（pwd）查詢，不使用 `HOME` 環境變數），不提供自訂位置。
 除了 `auto`，模型必須在 `src/quote_sign/llm.py` 的 `PRICES` 有單價（用來估算花費），沒有就拒絕呼叫。`--extract-model` 指定的值會連同 Smart Routing key 一起送出，`--review-model` 的值連同一般 key 一起送出；審條款不要設成 `auto`。報價單的有效期限若已過，檢查會不過；錄影日期晚於 2026-12-05 時請加 `--today`。
 
 ## 第 4～5 步：sandbox 送簽、追蹤與下載
@@ -116,7 +116,7 @@ Sandbox 每 24 小時限 20 個任務，本機保護門檻 15（含失敗與結�
 
 `--watch N` 接受 1～20，每 30 秒查詢，遇最終狀態提早停止。`fetch` 只下載 completed 任務，寫入 `<out-dir>/signed/<quote_no>-signed.pdf`，並追加及印出一行 `signed-log.jsonl`：角色、顯示名稱、完成時間（UTC+8）、來源 Markdown／送簽 PDF／已簽 PDF 雜湊；不存信箱或下載連結。沒有本機任務紀錄時，檔名使用 `task-<id>-signed.pdf`，未知名稱與來源版本記為 null。
 
-固定狀態目錄 `~/.quote-sign/` 包含 `spend.json`、`sign-tasks.jsonl` 與各自的 lock，檔案權限 0600、目錄 0700。任務紀錄在呼叫前就寫 sending，之後追加 created／failed／unknown；token 永遠只在記憶體。預簽下載不帶 Authorization，也不跟隨重新導向。
+固定狀態目錄 `<系統帳號的家目錄>/.quote-sign/` 包含 `spend.json`、`sign-tasks.jsonl` 與各自的 lock，檔案權限 0600、目錄 0700。任務紀錄在呼叫前就寫 sending，之後追加 created／failed／unknown；token 永遠只在記憶體。預簽下載不帶 Authorization，也不跟隨重新導向。
 
 錯誤範例的第二列小計寫成 12,000，程式在第 3 步指出「第 2 列小計應為 15,000」並退出 30；即使帶 `--send` 或 `--send --dry-run` 都不會呼叫 signer 或 DottedSign。
 
@@ -131,7 +131,8 @@ Sandbox 每 24 小時限 20 個任務，本機保護門檻 15（含失敗與結�
 | 10 | 停在第 1 步（轉 PDF 失敗） |
 | 20 | 停在第 2 步（ComPDF 讀取失敗） |
 | 30 | 停在第 3 步（算數、兩邊讀法不一致、日期或條款審查不過） |
-| 31 | 第 3 步的模型呼叫失敗，或累計花費已達上限 |
+| 31 | 累計花費已達上限（啟動預檢即停止），或第 3 步的模型呼叫／執行途中花費紀錄失敗 |
+| 32 | 本機狀態無法使用（查不到系統帳號家目錄，或花費紀錄損毀、不可讀、不是一般檔案、是符號連結、總額與明細不符）；在轉 PDF 與呼叫任何服務之前就停，不改寫紀錄 |
 | 40 | 送簽停止／失敗，或追蹤、下載錯誤 |
 | 41 | DottedSign 本機或 API 配額用完 |
 | 42 | status 為 declined、expired、voided、deleted、unknown |
@@ -144,7 +145,8 @@ Sandbox 每 24 小時限 20 個任務，本機保護門檻 15（含失敗與結�
 - 審條款：`gpt-6-sol`（OpenAI，US$2.00／10.00 每百萬 token，輸入／輸出），單價取自 MixRoute 公開的 Model Marketplace（2026-11-13）。
 - 抽欄位：`auto`，平台選模型，事前不知道單價，所以 `auto` 不在 `PRICES`。呼叫前的最壞情況檢查用 `PRICES` 裡**最貴**的輸入單價與**最貴**的輸出單價（目前都是 `gpt-6-sol` 的 2.00／10.00）。回應回報的 `model` 若是 `PRICES` 裡的模型，花費改用那個模型的單價估算；不在（或沒回報）就維持最貴單價，寧可高估。
 - MixRoute 回應**沒有花費欄位**，只有 token 數，所以花費＝token×公告單價，一律標「估算」。如果之後回應帶了數字的 `usage.cost` 或 `cost`，程式會改用它並標「實際」。
-- 每次呼叫前先看本機花費檔 `~/.quote-sign/spend.json`：累計已達上限，或「累計＋這次的最壞情況」會超過上限，就拒絕呼叫（退出碼 31）。兩把 key 的呼叫算在同一份花費檔裡。花費檔損毀也拒絕（不會悄悄歸零）。上限限定 US$0～5，不能超過 US$5。每次呼叫前用 flock 跨程序鎖預留最壞費用，取得成功回覆後才結算；逾時、失敗或中斷會保留預留額度。
+- 每次呼叫前先看本機花費檔 `~/.quote-sign/spend.json`：累計已達上限，或「累計＋這次的最壞情況」會超過上限，就拒絕呼叫（退出碼 31）。兩把 key 的呼叫算在同一份花費檔裡。啟動時先在鎖內檢查花費檔；損毀、不可讀、不是一般檔案、是符號連結或總額與明細不符都會在轉 PDF 與呼叫任何服務前停止（退出碼 32），不改寫紀錄。上限限定 US$0～5，不能超過 US$5。每次呼叫前用 flock 跨程序鎖預留最壞費用，取得成功回覆後才結算；逾時、失敗或中斷會保留預留額度。
+- 只有刪除 `spend.json` 才會重設累計；手動修改總額會因為必須等於每筆明細的加總而被拒絕。更換 `HOME` 不會改變狀態位置或重設累計。
 - 這一輪的實測累計見下方「實測結論」。
 
 ## 實測結論（2026-11-13，只送範例假資料）
@@ -230,9 +232,9 @@ CI：`.github/workflows/ci.yml` 在每個 PR 和推到 main 時，用 GitHub 代
 - 抽欄位走 Smart Routing，選到哪個模型由平台決定，可能與審條款是同一家甚至同一個模型；程式只擋 CLI 參數兩邊相同，不檢查回應回報的模型。
 - 審條款是模型判斷，會因提示與模型版本而不同。
 - 文件內容會當作資料送給模型；提示要求忽略文件中的指令，但這不是保證。算數與比對是程式，不受影響。
-- 花費上限是本機的防誤用措施，不防刻意繞過：
-  - 刪掉 `~/.quote-sign/spend.json`，或換一個 `HOME` 執行，累計就從 0 開始。
+- 這是本機單一使用者工具：花費上限只能防止意外誤用與環境變數繞過，無法阻止擁有此帳號權限的人刻意刪除或重寫檔案。
+  - 只有刪除 `<系統帳號的家目錄>/.quote-sign/spend.json` 才會重設累計；總額必須等於明細加總，手動改低總額會被拒絕。
   - 預留額是估算的最壞情況：輸入 token 用字元數估（某些 tokenizer 下可能低估），輸出用 `max_tokens` 上限。
-  - 逾時、網路錯誤、HTTP 錯誤、Ctrl-C：預留額留在帳上，不會退回，累計會偏高（偏安全）。要歸零只能手動處理花費檔。
+  - 逾時、網路錯誤、HTTP 錯誤、Ctrl-C：預留額留在帳上，不會退回，累計會偏高（偏安全）。要歸零只能刪除 `spend.json`。
   - 花費是 token × 公告單價的估算，不是 MixRoute 的帳單。
 - 本機圖片不會嵌進 PDF（見「安全」），需要圖片的報價單目前不支援。

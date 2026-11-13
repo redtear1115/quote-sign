@@ -7,12 +7,14 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from . import secrets
-from .errors import InputNotFound, InputRejected, MissingSecretError, QuoteSignError, SigningNotConfigured, SigningError, SigningQuotaExceeded
+from .errors import BudgetExceeded, InputNotFound, InputRejected, LocalStateError, MissingSecretError, QuoteSignError, SigningNotConfigured, SigningError, SigningQuotaExceeded
 from .export_pdf import export_pdf
 from .input_file import EXIT_INPUT_REJECTED, load_markdown
 from .pipeline import Deps, run
 from .sign import RefusingSigner, DottedSignSigner, TaskLog
 from .paths import state_dir
+
+EXIT_LOCAL_STATE = 32
 
 
 class _Parser(argparse.ArgumentParser):
@@ -59,6 +61,8 @@ def build_real_deps(args) -> Deps:
         return MixRouteClient(base_url=keys["MIX_ROUTE_BASE_URL"], api_key=api_key,
                               ledger=ledger, transport=None)
 
+    ledger = SpendLedger(state_dir() / "spend.json", cap_usd=args.spend_cap_usd)
+    ledger.check()
     return Deps(
         export=export_pdf,
         reader=ComPdfClient(api_key=keys["COMPDF_PUBLIC_KEY"], transport=None),
@@ -114,10 +118,11 @@ def _tracking(argv):
     args = parser.parse_args(argv[1:])
     secrets.require(*DOTTEDSIGN_NAMES)
     try:
+        task_log = TaskLog(state_dir() / "sign-tasks.jsonl")
         client = build_signing_client()
         if command == "status":
             return track.status(client, args.task_id, watch=args.watch)
-        return track.fetch(client, args.task_id, TaskLog(state_dir() / "sign-tasks.jsonl"), args.out_dir)
+        return track.fetch(client, args.task_id, task_log, args.out_dir)
     except SigningQuotaExceeded as exc:
         secrets.emit_err(str(exc))
         return 41
@@ -169,6 +174,12 @@ def main(argv=None) -> int:
     except (MissingSecretError, SigningNotConfigured) as exc:
         secrets.emit_err(str(exc))
         return 2
+    except LocalStateError as exc:
+        secrets.emit_err(str(exc))
+        return EXIT_LOCAL_STATE
+    except BudgetExceeded as exc:
+        secrets.emit_err(str(exc))
+        return 31
     except QuoteSignError as exc:
         secrets.emit_err(f"工具錯誤：{exc}")
         return 1

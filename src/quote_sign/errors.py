@@ -27,6 +27,10 @@ class LlmError(QuoteSignError):
     pass
 
 
+class LocalStateError(LlmError):
+    """Local state or the spending ledger is unusable."""
+
+
 class BudgetExceeded(LlmError):
     pass
 

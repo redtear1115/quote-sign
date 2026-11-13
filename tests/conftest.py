@@ -3,16 +3,51 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import date
 from decimal import Decimal
+import os
 from pathlib import Path
+import pwd
 
 import pytest
 
+import quote_sign.paths
+import quote_sign.storage
 from quote_sign.export_pdf import ExportResult
 from quote_sign.input_file import InputDoc
 from quote_sign.models import LineItem, LlmResult, ParsedPdf, Quote
 from quote_sign.pipeline import Deps
 
 ROOT = Path(__file__).resolve().parents[1]
+REAL_LEDGER_HOME = quote_sign.paths.ledger_home
+try:
+    REAL_STATE_DIR = os.path.abspath(os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".quote-sign"))
+except Exception:
+    REAL_STATE_DIR = None
+
+
+def _real_state_snapshot():
+    if REAL_STATE_DIR is None:
+        return None
+    snapshot = []
+    for name in ("spend.json", "sign-tasks.jsonl"):
+        try:
+            info = os.lstat(os.path.join(REAL_STATE_DIR, name))
+        except FileNotFoundError:
+            snapshot.append((False, None, None, None))
+        else:
+            snapshot.append((True, info.st_mtime_ns, info.st_size, info.st_ino))
+    return snapshot
+
+
+def pytest_sessionstart(session):
+    session._real_state_before = _real_state_snapshot()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if _real_state_snapshot() != session._real_state_before:
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_line("test changed the real ledger files")
+        session.exitstatus = 1
 
 
 class FakeTransport:
@@ -139,6 +174,32 @@ def offline_and_private(monkeypatch, tmp_path):
     import socket
     from quote_sign import secrets
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(quote_sign.paths, "ledger_home", lambda: tmp_path / "home")
+
+    def guard(path):
+        target = os.path.abspath(os.fspath(path))
+        if REAL_STATE_DIR is not None and (
+                target == REAL_STATE_DIR or target.startswith(REAL_STATE_DIR + os.sep)):
+            raise AssertionError("test touched the real ledger directory")
+
+    original_init = quote_sign.storage.PrivateStore.__init__
+    original_write = quote_sign.storage.atomic_write
+
+    def private_init(self, path, lock_name, error):
+        guard(path)
+        return original_init(self, path, lock_name, error)
+
+    def atomic_write(path, content):
+        guard(path)
+        return original_write(path, content)
+
+    monkeypatch.setattr(quote_sign.storage.PrivateStore, "__init__", private_init)
+    monkeypatch.setattr(quote_sign.storage, "atomic_write", atomic_write)
+    import sys
+    for module_name, module in list(sys.modules.items()):
+        if (module_name.startswith("quote_sign.") and module is not quote_sign.storage
+                and getattr(module, "atomic_write", None) is original_write):
+            monkeypatch.setattr(module, "atomic_write", atomic_write)
     for name in secrets.SECRET_NAMES + secrets.EMAIL_NAMES:
         monkeypatch.delenv(name, raising=False)
     def blocked(*args, **kwargs):

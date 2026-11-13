@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import time
 from typing import Optional
@@ -13,7 +14,7 @@ from uuid import uuid4
 
 from . import secrets
 from .storage import PrivateStore
-from .errors import BudgetExceeded, LlmError
+from .errors import BudgetExceeded, LlmError, LocalStateError
 from .models import LlmClient, LlmResult
 from .transport import Transport, UrllibTransport
 
@@ -47,7 +48,9 @@ def _amount(value) -> Decimal:
 
 class SpendLedger(PrivateStore):
     def __init__(self, path: Path, cap_usd: Decimal):
-        super().__init__(path, "spend.lock", LlmError)
+        # Lock and symlink failures use the same fixed ledger diagnostic.
+        super().__init__(path, "spend.lock", lambda _: LocalStateError(
+            "花費紀錄損毀或無法讀取，拒絕執行"))
         try:
             self.cap_usd = _amount(cap_usd)
             if self.cap_usd > HARD_CAP_USD:
@@ -59,18 +62,28 @@ class SpendLedger(PrivateStore):
         try:
             self.guard()
             try:
-                content = self.path.read_text(encoding="utf-8")
+                fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
             except FileNotFoundError:
                 # A dangling symlink is unreadable, rather than a new ledger.
                 if self.path.is_symlink():
                     raise ValueError("unreadable ledger")
                 return {"total_usd": "0", "calls": []}
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise ValueError("not a regular ledger")
+                with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as source:
+                    content = source.read()
+            finally:
+                os.close(fd)
             data = json.loads(content)
-            _amount(data["total_usd"])
+            if not isinstance(data, dict):
+                raise ValueError("invalid ledger")
+            total = _amount(data["total_usd"])
             if not isinstance(data["calls"], list):
                 raise ValueError("invalid calls")
+            costs = []
             for call in data["calls"]:
-                _amount(call["cost_usd"])
+                costs.append(_amount(call["cost_usd"]))
                 if (("pending" in call and type(call["pending"]) is not bool)
                         or ("id" in call and (not isinstance(call["id"], str) or not call["id"]))):
                     raise ValueError("invalid reservation")
@@ -80,9 +93,11 @@ class SpendLedger(PrivateStore):
                         any(type(call[k]) is not int or call[k] < 0
                             for k in ("prompt_tokens", "completion_tokens"))):
                     raise ValueError("invalid call")
+            if total != sum(costs, Decimal(0)):
+                raise ValueError("inconsistent total")
             return data
-        except (OSError, ValueError, TypeError, KeyError, InvalidOperation):
-            raise LlmError("花費紀錄損毀或無法讀取，拒絕呼叫") from None
+        except (OSError, ValueError, TypeError, KeyError, ArithmeticError, RecursionError):
+            raise LocalStateError("花費紀錄損毀或無法讀取，拒絕執行") from None
 
     def total(self) -> Decimal:
         with self.lock():
