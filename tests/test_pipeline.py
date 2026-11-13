@@ -7,7 +7,7 @@ import pytest
 from quote_sign.errors import BudgetExceeded, ExportError, LlmError, PdfReadError, QuoteSignError
 from quote_sign.input_file import InputDoc
 from quote_sign.pipeline import run
-from quote_sign.sign import RefusingSigner
+from quote_sign.sign import DottedSignSigner, RefusingSigner, TaskLog
 
 
 def test_all_good(deps, sample_path, capsys):
@@ -202,6 +202,48 @@ def test_signing_errors_exit_codes(deps, sample_path, quota, code):
         raise (SigningQuotaExceeded if quota else SigningError)("安全錯誤")
     deps.signer.send = fail
     assert run(sample_path, deps, send=True) == code
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("role,label,name", [
+    ("buyer", "買方", "王小明 x@example.invalid"),
+    ("seller", "賣方", "y@example.invalid"),
+    ("buyer", "買方", "王@小明"),
+])
+def test_unsafe_signer_name_exits_40(deps, sample_path, tmp_path, capsys, dry_run, role, label, name):
+    paragraphs = deps.reader.parsed.paragraphs
+    for index, paragraph in enumerate(paragraphs):
+        if paragraph.startswith(label + "："):
+            paragraphs[index] = label + "：" + name
+    deps.llm.extraction[role] = name
+    deps.out_dir.mkdir()
+    (deps.out_dir / "from-export.pdf").write_bytes(b"%PDF-fake-only")
+    log = TaskLog(tmp_path / "state" / "sign-tasks.jsonl")
+    deps.signer = DottedSignSigner(lambda: pytest.fail("No API client allowed"),
+                                  "buyer@example.invalid", "seller@example.invalid", log)
+    assert run(sample_path, deps, send=True, dry_run=dry_run) == 40
+    captured = capsys.readouterr()
+    assert "第 4 步（送簽）停止：簽署人顯示名稱含信箱，拒絕送簽" in captured.out
+    assert name not in captured.out + captured.err
+    assert not log.path.exists()
+
+
+def test_unknown_previous_signing_result_exits_40(deps, sample_path, tmp_path, capsys):
+    deps.out_dir.mkdir()
+    (deps.out_dir / "from-export.pdf").write_bytes(b"%PDF-fake-only")
+    log = TaskLog(tmp_path / "state" / "sign-tasks.jsonl")
+    log.begin(run_id="earlier", quote_no="Q2026-031",
+              source_sha256=InputDoc(sample_path.name, sample_path.read_bytes()).sha256,
+              pdf_sha256="b" * 64, buyer_name="買方", seller_name="賣方")
+    log.finish("earlier", "unknown")
+    before = log.path.read_bytes()
+    deps.signer = DottedSignSigner(lambda: pytest.fail("No API client allowed"),
+                                  "buyer@example.invalid", "seller@example.invalid", log)
+    assert run(sample_path, deps, send=True) == 40
+    output = capsys.readouterr().out
+    assert "第 4 步（送簽）停止：上一次送簽結果不明（沒有 task_id）；請先到 DottedSign web UI 或用 quote-sign status 檢查，確認沒有建立任務後再加 --resend" in output
+    assert "task_id=None" not in output
+    assert log.path.read_bytes() == before
 
 
 def test_missing_quote_number_stops(deps, sample_path):

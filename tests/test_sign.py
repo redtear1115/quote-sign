@@ -17,6 +17,8 @@ BUYER = "buyer@example.invalid"
 SELLER = "seller@example.invalid"
 BUYER_ANCHOR = (1, (87, 1165, 593, 1196))
 SELLER_ANCHOR = (1, (86, 1226, 594, 1258))
+UNSAFE_NAME_MESSAGE = "簽署人顯示名稱含信箱，拒絕送簽"
+UNKNOWN_MESSAGE = "上一次送簽結果不明（沒有 task_id）；請先到 DottedSign web UI 或用 quote-sign status 檢查，確認沒有建立任務後再加 --resend"
 
 
 @pytest.fixture
@@ -92,6 +94,73 @@ def events(log):
     return [json.loads(s) for s in log.path.read_text().splitlines()]
 
 
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("existing_log", [True, False])
+@pytest.mark.parametrize("field,name", [
+    ("buyer_name", "王小明 x@example.invalid"),
+    ("seller_name", "y@example.invalid"),
+    ("buyer_name", "王@小明"),
+    ("seller_name", "賣@方"),
+    ("buyer_name", None),
+    ("seller_name", 123),
+])
+def test_unsafe_display_names_refused_before_output_or_log(
+        request_pdf, tmp_path, capsys, dry_run, existing_log, field, name):
+    log = TaskLog(tmp_path / "state" / "sign-tasks.jsonl")
+    if existing_log:
+        log.begin(run_id="earlier", quote_no="Q2026-030", source_sha256="b" * 64,
+                  pdf_sha256="c" * 64, buyer_name="買方", seller_name="賣方")
+    before = log.path.read_bytes() if existing_log else None
+    signer = DottedSignSigner(lambda: pytest.fail("No API client allowed"), BUYER, SELLER, log)
+    with pytest.raises(SigningError) as caught:
+        signer.send(replace(request_pdf, **{field: name}), dry_run=dry_run)
+    assert str(caught.value) == UNSAFE_NAME_MESSAGE
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+    if existing_log:
+        assert log.path.read_bytes() == before
+    else:
+        assert not log.path.exists() and not log.path.parent.exists()
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+    assert str(name) not in str(caught.value) + captured.out + captured.err
+
+
+@pytest.mark.parametrize("state", ["unknown", "created"])
+@pytest.mark.parametrize("resend", [False, True])
+def test_active_task_reuse_or_refusal(request_pdf, tmp_path, capsys, state, resend):
+    log = TaskLog(tmp_path / "state" / "sign-tasks.jsonl")
+    log.begin(run_id="earlier", quote_no=request_pdf.quote_no,
+              source_sha256=request_pdf.source_sha256, pdf_sha256="b" * 64,
+              buyer_name=request_pdf.buyer_name, seller_name=request_pdf.seller_name)
+    log.finish("earlier", state, 72 if state == "created" else None)
+    before = log.path.read_bytes()
+    calls = []
+    def factory():
+        if not resend:
+            pytest.fail("No API client allowed")
+        return SimpleNamespace(create_task=lambda body: calls.append(body) or 91)
+    signer = DottedSignSigner(factory, BUYER, SELLER, log)
+    if state == "unknown" and not resend:
+        with pytest.raises(SigningError) as caught:
+            signer.send(request_pdf, dry_run=False)
+        assert str(caught.value) == UNKNOWN_MESSAGE
+        assert caught.value.__cause__ is None and caught.value.__suppress_context__
+        assert capsys.readouterr().out == ""
+    else:
+        outcome = signer.send(request_pdf, dry_run=False, resend=resend)
+        assert outcome.task_id == (91 if resend else 72)
+        assert outcome.reused is (not resend) and not outcome.dry_run
+        if not resend:
+            output = capsys.readouterr().out
+            assert "task_id=72" in output and "--resend" in output
+    if resend:
+        assert len(calls) == 1
+        assert [row["state"] for row in events(log)] == ["sending", state, "sending", "created"]
+        assert events(log)[-1]["task_id"] == 91
+    else:
+        assert not calls and log.path.read_bytes() == before
+
+
 def test_dry_run_is_entirely_local(request_pdf, signing, capsys):
     signer, log, calls, factory_calls, _ = signing
     outcome = signer.send(request_pdf, dry_run=True)
@@ -149,7 +218,11 @@ def test_failures_recorded(request_pdf, signing, error, state):
     assert [r["state"] for r in events(log)] == ["sending", state]
     assert log.count_last_24h(datetime.now(timezone.utc)) == 1
     if state == "unknown":
-        assert signer.send(request_pdf, dry_run=False).reused
+        before = log.path.read_bytes()
+        with pytest.raises(SigningError) as caught:
+            signer.send(request_pdf, dry_run=False)
+        assert str(caught.value) == UNKNOWN_MESSAGE
+        assert log.path.read_bytes() == before
 
 
 def test_http_400_is_failed(request_pdf, signing):

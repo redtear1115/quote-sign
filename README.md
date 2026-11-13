@@ -48,7 +48,7 @@ python3 -m venv .venv
 | `QUOTE_SIGN_BUYER_EMAIL` | 否 | --send（包含 dry-run）需要，買方先簽 |
 | `QUOTE_SIGN_SELLER_EMAIL` | 否 | --send（包含 dry-run）需要，賣方後簽 |
 
-缺變數時只列出**變數名稱**（退出碼 2）。只有 `src/quote_sign/secrets.py` 會碰環境變數，所有輸出和 log 都先過遮罩（把這些變數的值換成 `***`）。
+缺變數時只列出**變數名稱**（退出碼 2）。只有 `src/quote_sign/secrets.py` 會碰環境變數，所有輸出和 log 都先過遮罩（金鑰換成 `***`）。信箱的本地部分與第一個網域標籤分別遮罩：少於 4 個字元完全隱藏為 `***`，4 個以上只保留首字元加 `***`；保留最後一個網域標籤，例如 `buyer@example.invalid` → `b***@e***.invalid`。
 
 **隱私**：這支程式會把 PDF 送到 ComPDF，把 PDF 文字送到 MixRoute 和它背後的模型供應商。只能用範例（假資料）報價單，不要送真實客戶資料或私人內容。
 
@@ -114,7 +114,7 @@ quote-sign fetch <task_id> --out-dir out
 
 Dry-run 會跑第 1～3 步（仍會呼叫 ComPDF 與 MixRoute），通過後印完整 DottedSign 請求形狀，信箱遮罩、PDF base64 省略；不建立 DottedSign client、不寫任務紀錄、不寄信。真正送簽需要兩個 DottedSign 變數。API 網域固定 sandbox，不能改到 production。
 
-買方先簽、賣方後簽；**本工具永不代簽**。Sandbox PDF 有 **Non official** 浮水印。簽名欄由 ComPDF 讀到的兩行簽署位置換算，位置缺失即停。同一報價單號與 Markdown 版本已有任務時會沿用；只有加 `--resend` 才另建。
+買方先簽、賣方後簽；**本工具永不代簽**。Sandbox PDF 有 **Non official** 浮水印。簽名欄由 ComPDF 讀到的兩行簽署位置換算，位置缺失即停。文件中的簽署人顯示名稱若含信箱或 `@`，或不是字串，會拒絕送簽（含 dry-run），退出碼 40。同一報價單號與 Markdown 版本已有 `created` 任務時會沿用；只有加 `--resend` 才另建。若上一次結果為 `unknown`（沒有 task_id），會停止並退出 40，請先到 DottedSign web UI 或用 `quote-sign status` 檢查，確認沒有建立任務後再加 `--resend`。
 
 Sandbox 每 24 小時限 20 個任務，本機保護門檻 15（含失敗與結果不明的嘗試）。403 立即停止。建立任務遇 429、5xx、網路逾時不自動重試；可能已建立時先用 `status` 或 DottedSign web UI 確認，再決定是否重送。GET 最多三次，等待 1、2 秒；401 更新 token 後重試一次。
 

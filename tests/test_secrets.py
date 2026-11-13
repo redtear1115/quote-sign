@@ -170,13 +170,39 @@ def test_stdout_and_stderr_are_masked(fake_keys, capsys):
     assert captured.out == "***\n" and captured.err == "***\n"
 
 
-@pytest.mark.parametrize("addr,expected", [("alice@fake-mail.test", "a***@f***.test"),
-    ("bob@mail.example.invalid", "b***@m***.invalid"), ("x@y.z", "x***@y***.z"),
+VALID_MASK_EMAIL_CASES = [
+    ("alice@example.invalid", "a***@e***.invalid"),
+    ("bob@mail.example.invalid", "***@m***.invalid"),
+    ("a@b.example.invalid", "***@***.invalid"),
+    ("ab@cd.example.invalid", "***@***.invalid"),
+    ("abc@def.example.invalid", "***@***.invalid"),
+    ("abcd@efgh.example.invalid", "a***@e***.invalid"),
+    ("buyer@example.invalid", "b***@e***.invalid"),
+    ("longlocalpart@longdomain.example.invalid", "l***@l***.invalid"),
+    ("用戶名稱@example.invalid", "用***@e***.invalid"),
+]
+
+
+@pytest.mark.parametrize("addr,expected", VALID_MASK_EMAIL_CASES + [
+    ("", "***"), (None, "***"), (123, "***"),
     ("invalid", "***"), ("@example.invalid", "***"), ("a@", "***"),
     ("a@example", "***"), ("a@@example.invalid", "***"), ("a@.invalid", "***"),
     ("a b@example.invalid", "***")])
 def test_mask_email(addr, expected):
     assert secrets.mask_email(addr) == expected
+
+
+@pytest.mark.parametrize("addr,expected", VALID_MASK_EMAIL_CASES)
+def test_short_email_parts_are_fully_hidden(addr, expected):
+    assert secrets._valid_email(addr)
+    local, domain = addr.split("@")
+    masked_local, masked_domain = secrets.mask_email(addr).split("@")
+    first_label = domain.split(".")[0]
+    if len(local) < 4:
+        assert masked_local == "***" and local not in masked_local
+    if len(first_label) < 4:
+        assert masked_domain.split(".")[0] == "***"
+        assert first_label not in masked_domain.split(".")[0]
 
 
 def test_email_masking_case_insensitive_and_arbitrary(monkeypatch):

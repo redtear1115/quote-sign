@@ -45,7 +45,9 @@ def mask_email(addr: str) -> str:
         return "***"
     local, domain = addr.split("@")
     labels = domain.split(".")
-    return local[0] + "***@" + labels[0][0] + "***." + labels[-1]
+    local_mask = (local[0] if len(local) >= 4 else "") + "***"
+    domain_mask = (labels[0][0] if len(labels[0]) >= 4 else "") + "***"
+    return local_mask + "@" + domain_mask + "." + labels[-1]
 
 
 def _valid_email(addr):

@@ -63,6 +63,9 @@ def field_coords(anchor):
 
 
 def build_task_body(req, buyer_email, seller_email, pdf_bytes, run_id):
+    for name in (req.buyer_name, req.seller_name):
+        if not isinstance(name, str) or secrets._EMAIL.search(name) or "@" in name:
+            raise SigningError("簽署人顯示名稱含信箱，拒絕送簽") from None
     if not isinstance(req.quote_no, str) or not QUOTE_NO.fullmatch(req.quote_no):
         raise SigningError("報價單號無效，無法建立送簽檔名") from None
     stages = []
@@ -199,6 +202,8 @@ class DottedSignSigner:
         with self.task_log.lock():
             active = self.task_log.find_active(req.quote_no, req.source_sha256)
             if active and not resend:
+                if active["state"] == "unknown":
+                    raise SigningError("上一次送簽結果不明（沒有 task_id）；請先到 DottedSign web UI 或用 quote-sign status 檢查，確認沒有建立任務後再加 --resend") from None
                 secrets.emit(f"已有送簽任務 task_id={active['task_id']}（狀態={active['state']}）；需加 --resend 才會另建任務。請先查 DottedSign web UI。")
                 return SignOutcome(active["task_id"], False, True)
             now = self._now() if callable(self._now) else self._now
