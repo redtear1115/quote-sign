@@ -75,7 +75,8 @@ def test_unexpected_client_exception_is_masked(name, fake_keys, deps, sample_pat
     assert cli.main([str(sample_path)]) == 70
     captured = capsys.readouterr()
     assert "未預期的錯誤：RuntimeError" in captured.err
-    assert "***" in captured.err
+    assert captured.err == "未預期的錯誤：RuntimeError\n"
+    assert "service failed" not in captured.err
     assert not any(value in captured.out + captured.err for value in fake_keys.values())
     assert "Traceback" not in captured.err
 
@@ -167,3 +168,78 @@ def test_stdout_and_stderr_are_masked(fake_keys, capsys):
     secrets.emit_err(value)
     captured = capsys.readouterr()
     assert captured.out == "***\n" and captured.err == "***\n"
+
+
+VALID_MASK_EMAIL_CASES = [
+    ("alice@example.invalid", "a***@e***.invalid"),
+    ("bob@mail.example.invalid", "***@m***.invalid"),
+    ("a@b.example.invalid", "***@***.invalid"),
+    ("ab@cd.example.invalid", "***@***.invalid"),
+    ("abc@def.example.invalid", "***@***.invalid"),
+    ("abcd@efgh.example.invalid", "a***@e***.invalid"),
+    ("buyer@example.invalid", "b***@e***.invalid"),
+    ("longlocalpart@longdomain.example.invalid", "l***@l***.invalid"),
+    ("用戶名稱@example.invalid", "用***@e***.invalid"),
+]
+
+
+@pytest.mark.parametrize("addr,expected", VALID_MASK_EMAIL_CASES + [
+    ("", "***"), (None, "***"), (123, "***"),
+    ("invalid", "***"), ("@example.invalid", "***"), ("a@", "***"),
+    ("a@example", "***"), ("a@@example.invalid", "***"), ("a@.invalid", "***"),
+    ("a b@example.invalid", "***")])
+def test_mask_email(addr, expected):
+    assert secrets.mask_email(addr) == expected
+
+
+@pytest.mark.parametrize("addr,expected", VALID_MASK_EMAIL_CASES)
+def test_short_email_parts_are_fully_hidden(addr, expected):
+    assert secrets._valid_email(addr)
+    local, domain = addr.split("@")
+    masked_local, masked_domain = secrets.mask_email(addr).split("@")
+    first_label = domain.split(".")[0]
+    if len(local) < 4:
+        assert masked_local == "***" and local not in masked_local
+    if len(first_label) < 4:
+        assert masked_domain.split(".")[0] == "***"
+        assert first_label not in masked_domain.split(".")[0]
+
+
+def test_email_masking_case_insensitive_and_arbitrary(monkeypatch):
+    monkeypatch.setenv("QUOTE_SIGN_BUYER_EMAIL", "buyer@example.invalid")
+    monkeypatch.setenv("QUOTE_SIGN_SELLER_EMAIL", "seller@example.invalid")
+    monkeypatch.setenv("MIX_ROUTE_API_KEY", "fake-secret-0001")
+    output = secrets.mask("BUYER@EXAMPLE.INVALID seller@example.invalid other@else.invalid fake-secret-0001")
+    assert output == "b***@e***.invalid s***@e***.invalid o***@e***.invalid ***"
+
+
+def test_email_reverse_check(monkeypatch, capsys):
+    value = "buyer@example.invalid"
+    monkeypatch.setenv("QUOTE_SIGN_BUYER_EMAIL", value)
+    monkeypatch.setattr(secrets, "MASKING_ENABLED", False)
+    secrets.emit(value)
+    assert capsys.readouterr().out == value + "\n"
+
+
+@pytest.mark.parametrize("buyer,seller", [("bad", "seller@example.invalid"),
+    ("buyer@example.invalid", "BUYER@EXAMPLE.INVALID"), ("a b@example.invalid", "seller@example.invalid"),
+    ("a@@example.invalid", "seller@example.invalid"), ("a@nodot", "seller@example.invalid"),
+    ("a"*250+"@x.invalid", "seller@example.invalid")])
+def test_invalid_signer_configuration_names_only(monkeypatch, buyer, seller):
+    from quote_sign.errors import SigningNotConfigured
+    monkeypatch.setenv("QUOTE_SIGN_BUYER_EMAIL", buyer)
+    monkeypatch.setenv("QUOTE_SIGN_SELLER_EMAIL", seller)
+    with pytest.raises(SigningNotConfigured) as caught:
+        secrets.require_signer_emails()
+    assert buyer not in str(caught.value) and seller not in str(caught.value)
+    assert "QUOTE_SIGN_BUYER_EMAIL" in str(caught.value)
+
+
+def test_require_signers_missing_then_valid(monkeypatch):
+    with pytest.raises(MissingSecretError) as caught:
+        secrets.require_signer_emails()
+    assert caught.value.names == list(secrets.EMAIL_NAMES)
+    values = ("buyer@example.invalid", "seller@example.invalid")
+    for name, value in zip(secrets.EMAIL_NAMES, values):
+        monkeypatch.setenv(name, value)
+    assert secrets.require_signer_emails() == values

@@ -5,12 +5,14 @@ from decimal import Decimal
 import pytest
 
 from quote_sign.errors import BudgetExceeded, ExportError, LlmError, PdfReadError, QuoteSignError
+from quote_sign.input_file import InputDoc
 from quote_sign.pipeline import run
-from quote_sign.sign import RefusingSigner
+from quote_sign.sign import DottedSignSigner, RefusingSigner, TaskLog
 
 
 def test_all_good(deps, sample_path, capsys):
     assert run(sample_path, deps) == 0
+    assert deps.export.calls == [(InputDoc(sample_path.name, sample_path.read_bytes()), deps.out_dir)]
     assert [c["model"] for c in deps.llm.calls] == ["cheap", "strong"]
     assert [c["purpose"] for c in deps.llm.calls] == ["抽欄位", "審條款"]
     assert all(c["user"] == deps.reader.parsed.markdown for c in deps.llm.calls)
@@ -109,13 +111,19 @@ def test_send_refused(deps, sample_path, capsys):
     assert run(sample_path, deps, send=True) == 40
     output = capsys.readouterr().out
     assert "第 4 步（送簽）停止" in output
-    assert "QUOTE_SIGN_TEST_EMAIL_1 / QUOTE_SIGN_TEST_EMAIL_2" in output
+    assert "QUOTE_SIGN_BUYER_EMAIL / QUOTE_SIGN_SELLER_EMAIL" in output
 
 
-def test_signer_only_called_after_pass_with_placeholder_emails(deps, sample_path):
+def test_signer_only_called_after_pass_with_request(deps, sample_path):
     assert run(sample_path, deps, send=True) == 0
-    assert deps.signer.calls == [((deps.out_dir / "from-export.pdf",),
-                                 {"buyer_email": "", "seller_email": "", "dry_run": True})]
+    from quote_sign.sign import SignRequest
+    assert len(deps.signer.calls) == 1
+    (request,), kwargs = deps.signer.calls[0]
+    assert isinstance(request, SignRequest)
+    assert request.pdf_path == deps.out_dir / "from-export.pdf"
+    assert request.quote_no == "Q2026-031"
+    assert request.buyer_anchor and request.seller_anchor
+    assert kwargs == {"dry_run": False, "resend": False}
 
 
 def test_same_models_fail_before_any_call(deps, sample_path):
@@ -176,3 +184,71 @@ def test_report_table_rows_align(deps, sample_path, capsys):
     from quote_sign.pipeline import _width
 
     assert len({_width(row.split(" | ")[0]) for row in rows}) == 1
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_bad_sample_never_reaches_signer(deps, sample_path, dry_run, capsys):
+    deps.reader.parsed.tables[0][2][3] = "12,000"
+    deps.llm.extraction["items"][1]["subtotal"] = "12,000"
+    assert run(sample_path.with_name("quote-Q2026-031-bad.md"), deps, send=True, dry_run=dry_run) == 30
+    assert not deps.signer.calls
+    assert "第 2 列小計應為 15,000" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("quota,code", [(False, 40), (True, 41)])
+def test_signing_errors_exit_codes(deps, sample_path, quota, code):
+    from quote_sign.errors import SigningError, SigningQuotaExceeded
+    def fail(*args, **kwargs):
+        raise (SigningQuotaExceeded if quota else SigningError)("安全錯誤")
+    deps.signer.send = fail
+    assert run(sample_path, deps, send=True) == code
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("role,label,name", [
+    ("buyer", "買方", "王小明 x@example.invalid"),
+    ("seller", "賣方", "y@example.invalid"),
+    ("buyer", "買方", "王@小明"),
+])
+def test_unsafe_signer_name_exits_40(deps, sample_path, tmp_path, capsys, dry_run, role, label, name):
+    paragraphs = deps.reader.parsed.paragraphs
+    for index, paragraph in enumerate(paragraphs):
+        if paragraph.startswith(label + "："):
+            paragraphs[index] = label + "：" + name
+    deps.llm.extraction[role] = name
+    deps.out_dir.mkdir()
+    (deps.out_dir / "from-export.pdf").write_bytes(b"%PDF-fake-only")
+    log = TaskLog(tmp_path / "state" / "sign-tasks.jsonl")
+    deps.signer = DottedSignSigner(lambda: pytest.fail("No API client allowed"),
+                                  "buyer@example.invalid", "seller@example.invalid", log)
+    assert run(sample_path, deps, send=True, dry_run=dry_run) == 40
+    captured = capsys.readouterr()
+    assert "第 4 步（送簽）停止：簽署人顯示名稱含信箱，拒絕送簽" in captured.out
+    assert name not in captured.out + captured.err
+    assert not log.path.exists()
+
+
+def test_unknown_previous_signing_result_exits_40(deps, sample_path, tmp_path, capsys):
+    deps.out_dir.mkdir()
+    (deps.out_dir / "from-export.pdf").write_bytes(b"%PDF-fake-only")
+    log = TaskLog(tmp_path / "state" / "sign-tasks.jsonl")
+    log.begin(run_id="earlier", quote_no="Q2026-031",
+              source_sha256=InputDoc(sample_path.name, sample_path.read_bytes()).sha256,
+              pdf_sha256="b" * 64, buyer_name="買方", seller_name="賣方")
+    log.finish("earlier", "unknown")
+    before = log.path.read_bytes()
+    deps.signer = DottedSignSigner(lambda: pytest.fail("No API client allowed"),
+                                  "buyer@example.invalid", "seller@example.invalid", log)
+    assert run(sample_path, deps, send=True) == 40
+    output = capsys.readouterr().out
+    assert "第 4 步（送簽）停止：上一次送簽結果不明（沒有 task_id）；請先到 DottedSign web UI 或用 quote-sign status 檢查，確認沒有建立任務後再加 --resend" in output
+    assert "task_id=None" not in output
+    assert log.path.read_bytes() == before
+
+
+def test_missing_quote_number_stops(deps, sample_path):
+    from dataclasses import replace
+    deps.reader.parsed = replace(deps.reader.parsed,
+                                 markdown=deps.reader.parsed.markdown.replace("Q2026-031", "missing"))
+    assert run(sample_path, deps, send=True) == 40
+    assert not deps.signer.calls

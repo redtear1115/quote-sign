@@ -86,7 +86,7 @@ def test_real_fixture_and_upload(zipped, pdf_path, result_bytes, fake_transport)
     (upload_response(code="06001", msg="denied"), "額度用完"),
     (json_response({"code": 403, "message": "denied"}, 403), "HTTP 403"),
     (HttpResponse(200, b"private non-JSON body"), "ComPDF"),
-    (upload_response(data={"status": "failed", "failureCode": "bad", "failureReason": "failed"}), "bad failed"),
+    (upload_response(data={"status": "failed", "failureCode": "bad", "failureReason": "failed"}), "HTTP 200（處理失敗）"),
     (upload_response(data={"status": "success", "downloadUrl": ""}), "回覆失敗"),
 ])
 def test_upload_failures(response, expected, pdf_path, fake_transport):
@@ -95,6 +95,7 @@ def test_upload_failures(response, expected, pdf_path, fake_transport):
         ComPdfClient(KEY, transport).parse(pdf_path)
     assert expected in str(caught.value)
     assert "private non-JSON body" not in str(caught.value)
+    assert all(value not in str(caught.value) for value in ("denied", "bad", "failed"))
     assert len(transport.calls) == 1
 
 
@@ -102,7 +103,8 @@ def test_echoed_key_is_redacted(pdf_path, fake_transport):
     transport = fake_transport(upload_response(code="06001", msg=KEY))
     with pytest.raises(PdfReadError) as caught:
         ComPdfClient(KEY, transport).parse(pdf_path)
-    assert KEY not in str(caught.value) and "***" in str(caught.value)
+    assert KEY not in str(caught.value)
+    assert str(caught.value) == "ComPDF 回覆失敗：HTTP 200（免費額度用完）"
     assert caught.value.__suppress_context__
 
 
@@ -176,3 +178,10 @@ def test_zip_path_is_never_extracted(pdf_path, result_bytes, fake_transport, tmp
                                HttpResponse(200, archive(result_bytes, "../../result_json.json")))
     assert ComPdfClient(KEY, transport).parse(pdf_path).page_count == 1
     assert sorted(path.name for path in tmp_path.iterdir()) == ["quote.pdf"]
+
+
+def test_real_sample_signature_anchors(pdf_path, result_bytes, fake_transport):
+    transport = fake_transport(upload_response(), HttpResponse(200, result_bytes))
+    parsed = ComPdfClient(KEY, transport).parse(pdf_path)
+    assert parsed.anchors == {"buyer": (1, (87, 1165, 593, 1196)),
+                              "seller": (1, (86, 1226, 594, 1258))}
