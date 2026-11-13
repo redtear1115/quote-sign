@@ -213,7 +213,7 @@ exit=30
 .venv/bin/pytest -q
 ```
 
-CI：`.github/workflows/ci.yml` 在每個 PR 和推到 main 時，用 GitHub 代管的 ubuntu runner 以 Python 3.9、3.13 各跑一次 pytest。不放任何金鑰，不連外部服務：`tests/conftest.py` 把 socket 連線全部擋掉，所有服務都換成假的 transport。CI 上沒有 marsdawn，測試也不需要。
+CI：`.github/workflows/ci.yml` 在每個 PR 和推到 main 時，用 GitHub 代管的 ubuntu runner 以 Python 3.10、3.13 各跑一次 pytest（ubuntu-latest 沒有 3.9；3.9 在本機用 macOS 內建的 Python 跑）。不放任何金鑰，不連外部服務：`tests/conftest.py` 把 socket 連線全部擋掉，所有服務都換成假的 transport。CI 上沒有 marsdawn，測試也不需要。
 
 涵蓋：輸入檔規則（副檔名、檔案或目錄是符號連結、`..`、目錄／FIFO／裝置檔、硬連結、檢查後換檔仍用檢查過的內容、拒絕時不建立任何服務）、算數（全對、第 2 列小計應為 15,000、加總／稅額／總計、全形數字、千分位、空列、小數）、停下邏輯（任一層不過 → 非 0、signer 沒被呼叫、兩邊不一致有標出）、花費上限（含 `auto` 的最壞情況與回報模型的估價）、兩把 MixRoute key 各走各的路徑（抽欄位 → Smart Routing key＋`auto`，審條款 → 一般 key＋指定模型）、金鑰保護（假值不出現在 `--help`、失敗路徑、例外路徑、log；缺變數只報名稱；原始碼裡除 `secrets.py` 外沒人碰環境變數）、外部呼叫用假的 transport（斷言 header 名稱 `x-api-key`、下載請求沒帶 key、不跟隨重新導向）。
 
