@@ -66,7 +66,7 @@ def test_fetch_pdf_and_one_private_record(tmp_path, capsys, known):
     assert json.loads(capsys.readouterr().out) == row
 
 
-@pytest.mark.parametrize("target", ["task-91-signed.pdf", "signed-log.jsonl", "signed-log.lock", "signed"])
+@pytest.mark.parametrize("target", ["signed-log.jsonl", "signed-log.lock", "signed"])
 def test_fetch_symlinks_refused(tmp_path, target):
     directory = tmp_path / "out" / "signed"
     directory.mkdir(parents=True)
@@ -94,3 +94,63 @@ def test_fetch_refuses_symlink_ancestor(tmp_path):
     with pytest.raises(SigningError):
         fetch(client, 91, TaskLog(tmp_path / "state" / "sign-tasks.jsonl"), out)
     assert not list(dest.iterdir())
+
+
+@pytest.fixture
+def tracking_scratch():
+    from pathlib import Path
+    import shutil
+    import tempfile
+    directory = tempfile.mkdtemp(dir="/tmp")
+    try:
+        yield Path(directory)
+    finally:
+        shutil.rmtree(directory)
+
+
+def test_fetch_replaces_pdf_symlink_and_keeps_files_private(tracking_scratch):
+    import stat
+    directory = tracking_scratch / "out/signed"
+    directory.mkdir(parents=True)
+    target = tracking_scratch / "target.pdf"
+    target.write_bytes(b"unchanged")
+    pdf_path = directory / "task-91-signed.pdf"
+    pdf_path.symlink_to(target)
+    client = SimpleNamespace(get_task=lambda _: task("completed"), download_signed=lambda _: b"%PDF-fake")
+    log = SimpleNamespace(find_task=lambda _: None)
+    assert fetch(client, 91, log, tracking_scratch / "out") == 0
+    assert not pdf_path.is_symlink()
+    assert pdf_path.read_bytes() == b"%PDF-fake"
+    assert target.read_bytes() == b"unchanged"
+    for name in ("task-91-signed.pdf", "signed-log.jsonl", "signed-log.lock"):
+        assert stat.S_IMODE((directory / name).stat().st_mode) == 0o600
+    assert not list(directory.glob(".quote-sign-*.tmp"))
+
+
+def test_fetch_write_failure_cleans_temp_and_closes_fds(tracking_scratch, monkeypatch):
+    import errno
+    import os
+    from quote_sign import track
+    original_open, original_close = os.open, os.close
+    active = set()
+    def opening(*args, **kwargs):
+        fd = original_open(*args, **kwargs)
+        active.add(fd)
+        return fd
+    def closing(fd):
+        active.remove(fd)
+        original_close(fd)
+    def fail(*args):
+        raise OSError(errno.ENOSPC, "CANARY-QUOTE-BODY-7f3a", "/secret/path")
+    # Use a fake task log so only fetch's descriptor operations are recorded.
+    log = SimpleNamespace(find_task=lambda _: None)
+    client = SimpleNamespace(get_task=lambda _: task("completed"), download_signed=lambda _: b"%PDF-fake")
+    monkeypatch.setattr(track.os, "open", opening)
+    monkeypatch.setattr(track.os, "close", closing)
+    monkeypatch.setattr(track.os, "write", fail)
+    with pytest.raises(SigningError) as caught:
+        fetch(client, 91, log, tracking_scratch / "out")
+    assert str(caught.value) == "無法寫入已簽 PDF 或紀錄，拒絕符號連結"
+    assert caught.value.__cause__ is None
+    assert not active
+    assert not list((tracking_scratch / "out/signed").glob(".quote-sign-*.tmp"))

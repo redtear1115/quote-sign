@@ -67,10 +67,11 @@ def test_export_uses_private_snapshot_and_cleans_up(tmp_path, monkeypatch, fails
         assert stat.S_IMODE(copy.parent.stat().st_mode) == 0o700
         assert stat.S_IMODE(copy.stat().st_mode) == 0o600
         assert command == ["marsdawn", "export", str(copy), "-o",
-                           str(tmp_path / "out" / "quote.pdf"), "--force", "--json"]
+                           str(copy.with_suffix(".pdf")), "--force", "--json"]
         assert kwargs == {"capture_output": True, "text": True, "timeout": 120}
         if fails:
             raise subprocess.TimeoutExpired("marsdawn", 120)
+        Path(command[4]).write_bytes(b"%PDF-fake")
         return SimpleNamespace(returncode=0, stdout=json.dumps({
             "ok": True, "output": command[4], "pages": 1,
         }))

@@ -8,6 +8,7 @@ from pathlib import Path
 import stat
 
 from .errors import InputNotFound, InputRejected
+from .safe_paths import expand_system_alias
 
 EXIT_INPUT_REJECTED = 3
 
@@ -54,6 +55,7 @@ def load_markdown(path: Path) -> InputDoc:
         raise InputRejected("副檔名不是 .md")
     if ".." in path.parts:
         raise InputRejected("路徑含 ..")
+    path = Path(expand_system_alias(str(path)))
 
     fds = []
     try:

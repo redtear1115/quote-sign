@@ -13,6 +13,7 @@ from .input_file import EXIT_INPUT_REJECTED, load_markdown
 from .pipeline import Deps, run
 from .sign import RefusingSigner, DottedSignSigner, TaskLog
 from .paths import state_dir
+from .safe_paths import check_out_dir
 
 EXIT_LOCAL_STATE = 32
 
@@ -114,8 +115,15 @@ def _tracking(argv):
     if command == "status":
         parser.add_argument("--watch", type=_watch, default=1)
     else:
-        parser.add_argument("--out-dir", type=Path, default=Path("out"))
+        parser.add_argument("--out-dir", default="out")
     args = parser.parse_args(argv[1:])
+    if command == "fetch":
+        try:
+            check_out_dir(args.out_dir)
+        except InputRejected as exc:
+            secrets.emit_err(f"輸出目錄不符規則（{exc.category}）：{args.out_dir}")
+            return EXIT_INPUT_REJECTED
+        args.out_dir = Path(args.out_dir)
     secrets.require(*DOTTEDSIGN_NAMES)
     try:
         task_log = TaskLog(state_dir() / "sign-tasks.jsonl")
@@ -142,7 +150,7 @@ def main(argv=None) -> int:
         parser._optionals.title = "選項"
         parser.add_argument("-h", "--help", action="help", help="顯示用法後結束。")
         parser.add_argument("file", help="報價單 Markdown 路徑。")
-        parser.add_argument("--out-dir", type=Path, default=Path("out"), help="PDF 輸出目錄。")
+        parser.add_argument("--out-dir", default="out", help="PDF 輸出目錄。")
         parser.add_argument("--send", action="store_true", help="通過檢查後嘗試送簽。")
         parser.add_argument("--today", type=_iso_date, default=date.today(), metavar="YYYY-MM-DD", help="檢查基準日期。")
         parser.add_argument("--extract-model", default="auto", help="抽欄位模型（auto＝MixRoute Smart Routing）。")
@@ -163,6 +171,12 @@ def main(argv=None) -> int:
         except InputRejected as exc:
             secrets.emit_err(f"輸入檔不符規則（{exc.category}）：{file_arg}")
             return EXIT_INPUT_REJECTED
+        try:
+            check_out_dir(args.out_dir)
+        except InputRejected as exc:
+            secrets.emit_err(f"輸出目錄不符規則（{exc.category}）：{args.out_dir}")
+            return EXIT_INPUT_REJECTED
+        args.out_dir = Path(args.out_dir)
         if args.extract_model == args.review_model:
             secrets.emit_err("設定錯誤：抽欄位與審條款必須使用不同模型")
             return 2
