@@ -6,13 +6,19 @@ from decimal import Decimal, InvalidOperation
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import time
 from typing import Optional
+from uuid import uuid4
 
-from .errors import BudgetExceeded, LlmError
+from . import secrets
+from .storage import PrivateStore
+from .errors import BudgetExceeded, LlmError, LocalStateError
 from .models import LlmClient, LlmResult
-from .transport import Transport, UrllibTransport
+from .transport import Transport, UrllibTransport, http_error_details
+
+HARD_CAP_USD = Decimal("5")
 
 # Public MixRoute marketplace, read 2026-11-13. ONLY to ESTIMATE cost:
 # the usual API response has no cost field. USD per 1M (input, output) tokens.
@@ -40,55 +46,112 @@ def _amount(value) -> Decimal:
     return amount
 
 
-class SpendLedger:
+class SpendLedger(PrivateStore):
     def __init__(self, path: Path, cap_usd: Decimal):
-        self.path = Path(path)
+        # Lock and symlink failures use the same fixed ledger diagnostic.
+        super().__init__(path, "spend.lock", lambda _: LocalStateError(
+            "花費紀錄損毀或無法讀取，拒絕執行"))
         try:
             self.cap_usd = _amount(cap_usd)
+            if self.cap_usd > HARD_CAP_USD:
+                raise ValueError("cap exceeds 5")
         except (ValueError, InvalidOperation):
             raise LlmError("花費上限無效") from None
 
     def _read(self) -> dict:
         try:
+            self.guard()
             try:
-                content = self.path.read_text(encoding="utf-8")
+                fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
             except FileNotFoundError:
                 # A dangling symlink is unreadable, rather than a new ledger.
                 if self.path.is_symlink():
                     raise ValueError("unreadable ledger")
                 return {"total_usd": "0", "calls": []}
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise ValueError("not a regular ledger")
+                with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as source:
+                    content = source.read()
+            finally:
+                os.close(fd)
             data = json.loads(content)
-            _amount(data["total_usd"])
+            if not isinstance(data, dict):
+                raise ValueError("invalid ledger")
+            total = _amount(data["total_usd"])
             if not isinstance(data["calls"], list):
                 raise ValueError("invalid calls")
+            costs = []
             for call in data["calls"]:
-                _amount(call["cost_usd"])
+                costs.append(_amount(call["cost_usd"]))
+                if (("pending" in call and type(call["pending"]) is not bool)
+                        or ("id" in call and (not isinstance(call["id"], str) or not call["id"]))):
+                    raise ValueError("invalid reservation")
                 datetime.fromisoformat(call["ts"])
                 if (not all(isinstance(call[k], str) for k in ("model", "purpose")) or
                         not isinstance(call["estimate"], bool) or
                         any(type(call[k]) is not int or call[k] < 0
                             for k in ("prompt_tokens", "completion_tokens"))):
                     raise ValueError("invalid call")
+            if total != sum(costs, Decimal(0)):
+                raise ValueError("inconsistent total")
             return data
-        except (OSError, ValueError, TypeError, KeyError, InvalidOperation):
-            raise LlmError("花費紀錄損毀或無法讀取，拒絕呼叫") from None
+        except (OSError, ValueError, TypeError, KeyError, ArithmeticError, RecursionError):
+            raise LocalStateError("花費紀錄損毀或無法讀取，拒絕執行") from None
 
     def total(self) -> Decimal:
-        return _amount(self._read()["total_usd"])
+        with self.lock():
+            return _amount(self._read()["total_usd"])
 
-    def check(self, worst_case: Decimal = Decimal(0)) -> None:
-        total = self.total()
+    def _check(self, total, worst_case):
+        if self.cap_usd > HARD_CAP_USD:
+            raise LlmError("花費上限不得超過 US$5") from None
         if total >= self.cap_usd or total + worst_case > self.cap_usd:
-            raise BudgetExceeded(f"累計花費已達上限 US${self.cap_usd}，拒絕再呼叫")
+            raise BudgetExceeded(f"累計花費已達上限 US${self.cap_usd}，拒絕再呼叫") from None
 
-    def add(self, model, purpose, prompt_tokens, completion_tokens, cost, estimate) -> None:
-        data = self._read()
-        data["total_usd"] = str(_amount(data["total_usd"]) + _amount(cost))
-        data["calls"].append({
-            "ts": datetime.now(timezone.utc).isoformat(), "model": model, "purpose": purpose,
-            "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
-            "cost_usd": str(cost), "estimate": estimate,
-        })
+    def check(self, worst_case=Decimal(0)):
+        with self.lock():
+            self._check(self.total(), _amount(worst_case))
+
+    @staticmethod
+    def _entry(model, purpose, prompt_tokens, completion_tokens, cost, estimate):
+        return {"ts": datetime.now(timezone.utc).isoformat(), "model": secrets.mask(model),
+                "purpose": secrets.mask(purpose), "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens, "cost_usd": str(cost), "estimate": estimate}
+
+    def reserve(self, model, purpose, worst_case):
+        with self.lock():
+            data = self._read()
+            cost = _amount(worst_case)
+            total = _amount(data["total_usd"])
+            self._check(total, cost)
+            entry_id = uuid4().hex
+            data["calls"].append({**self._entry(model, purpose, 0, 0, cost, True),
+                                  "id": entry_id, "pending": True})
+            data["total_usd"] = str(total + cost)
+            self._write(data)
+            return entry_id
+
+    def settle(self, entry_id, model, prompt_tokens, completion_tokens, cost, estimate):
+        with self.lock():
+            data = self._read()
+            entry = next((e for e in data["calls"] if e.get("id") == entry_id and e.get("pending")), None)
+            if entry is None:
+                raise LlmError("找不到花費預留紀錄") from None
+            data["total_usd"] = str(_amount(data["total_usd"]) - _amount(entry["cost_usd"]) + _amount(cost))
+            entry.update(self._entry(model, entry["purpose"], prompt_tokens, completion_tokens, cost, estimate))
+            entry["pending"] = False
+            self._write(data)
+
+    def add(self, model, purpose, prompt_tokens, completion_tokens, cost, estimate):
+        with self.lock():
+            data = self._read()
+            data["total_usd"] = str(_amount(data["total_usd"]) + _amount(cost))
+            data["calls"].append(self._entry(model, purpose, prompt_tokens, completion_tokens, cost, estimate))
+            self._write(data)
+
+    def _write(self, data):
+        self.guard()
         temp_path = None
         try:
             self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -98,6 +161,7 @@ class SpendLedger:
                 json.dump(data, target, ensure_ascii=False)
                 target.flush()
                 os.fsync(target.fileno())
+            self.guard()
             os.replace(temp_path, self.path)
         except (OSError, ValueError, TypeError):
             raise LlmError("無法寫入花費紀錄") from None
@@ -121,8 +185,11 @@ class MixRouteClient:
         self._transport = transport if transport is not None else UrllibTransport()
         self._timeout, self._clock = timeout, clock
 
+    def __repr__(self):
+        return "MixRouteClient(redacted)"
+
     def _redact(self, text: str) -> str:
-        return text.replace(self._api_key, "***") if self._api_key else text
+        return secrets.mask(text.replace(self._api_key, "***") if self._api_key else text)
 
     def chat_json(self, *, model, purpose, system, user, max_tokens) -> LlmResult:
         try:
@@ -146,7 +213,7 @@ class MixRouteClient:
         prompt_chars = len(system) + len(user)
         def cost_for(prompt, completion):
             return (prompt * input_price + completion * output_price) / Decimal(1_000_000)
-        self.ledger.check(cost_for(prompt_chars, max_tokens))
+        entry_id = self.ledger.reserve(self._redact(model), self._redact(purpose), cost_for(prompt_chars, max_tokens))
         body = json.dumps({"model": model, "messages": [
             {"role": "system", "content": system}, {"role": "user", "content": user}],
             "max_tokens": max_tokens}).encode("utf-8")
@@ -155,22 +222,15 @@ class MixRouteClient:
                                            {"Authorization": "Bearer " + self._api_key,
                                             "Content-Type": "application/json"}, body, self._timeout)
         seconds = self._clock() - started
+        if response.status != 200:
+            status, reason = http_error_details(response.status)
+            raise LlmError(f"MixRoute 回覆失敗：HTTP {status}（{reason}）") from None
         try:
             payload = json.loads(response.body, parse_float=Decimal)
         except (ValueError, UnicodeError):
             payload = {}
         if not isinstance(payload, dict):
             payload = {}
-        if response.status != 200:
-            error = payload.get("error", "")
-            message = error.get("message", "") if isinstance(error, dict) else error
-            message = message if isinstance(message, str) else ""
-            for sensitive in (body.decode(), "Bearer " + self._api_key,
-                              "application/json", "quote-sign/0.1", system, user):
-                if sensitive:
-                    message = message.replace(sensitive, "***")
-            raise LlmError(self._redact(f"MixRoute 回覆失敗：HTTP {response.status} " +
-                                      self._redact(message)[:200]))
         usage = payload.get("usage") or {}
         if not isinstance(usage, dict):
             usage = {}
@@ -193,8 +253,8 @@ class MixRouteClient:
                     break
                 except (ValueError, InvalidOperation):
                     pass
-        self.ledger.add(self._redact(actual_model), self._redact(purpose),
-                        prompt, completion, cost, estimate)
+        self.ledger.settle(entry_id, self._redact(actual_model),
+                           prompt, completion, cost, estimate)
         try:
             choice = payload["choices"][0]
             if choice.get("finish_reason") == "length":
