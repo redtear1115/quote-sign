@@ -1,18 +1,36 @@
 # quote-sign
 
-Markdown 報價單 → PDF → AI 檢查 → 送簽 → 追蹤。
+Markdown 報價單 → PDF → AI 檢查 → 電子送簽 → 追蹤歸檔。
 
-OPEN LAB AI 實作挑戰賽（2026）的參賽作品，開發中。規格見 [`docs/spec.md`](docs/spec.md)。
+OPEN LAB AI 實作挑戰賽（2026）參賽作品，整合 **MarsDawn CLI**、**ComPDF**、**MixRoute（Smart Routing＋指定模型）** 與 **DottedSign sandbox**，把報價單轉檔、金額核對、條款審查、建立簽署任務到取回已簽 PDF 串成一條可稽核的命令列流程（附 Claude Code skill）。
 
-**本整合 PR 合併至 main 後提供第 1～5 步**：轉 PDF、讀 PDF、三層檢查、DottedSign sandbox 送簽、追蹤與取回已簽 PDF。基準 main `e88b0e7` 只有第 1～3 步；本分支以正常 merge 帶入已驗 #3 `cb721815`，沒有額外產品碼修改。設計見 [`docs/design-signing.md`](docs/design-signing.md)。
+- 規格文件：[`docs/spec.md`](docs/spec.md)
+- 送簽設計：[`docs/design-signing.md`](docs/design-signing.md)
+- 外部服務筆記：[`docs/service-notes.md`](docs/service-notes.md)
 
-**歷史真實驗收**：[任務 407 證據](https://github.com/redtear1115/quote-sign/pull/3#issuecomment-6852364063) 屬 `a33459e1c560b830688eb1a38468710ce0ae6ec9`，不是本次整合 head 重跑。Ray 已完成買方、賣方簽署（兩方 `done`），`completed_at=2026-11-13T20:03:30+08:00`；`status`／`fetch` 都退出 0，已取回 `out/signed/Q2026-031-signed.pdf`（560k、0600、`%PDF-1.7`）與 `signed-log.jsonl`。本次只做離線測試，不查真 API、不變更 407。
+## 架構流程
 
-**簽署信限制**：原 #1「收到簽署信」尚未達成。`informable=false`，歷史任務未寄簽署邀請；Ray 使用 share link 先買方、再賣方完成。分享連結不代表收到信。Ray 決定先不改、不另建任務；本 PR 保留此限制。
+```mermaid
+flowchart LR
+    MD["Markdown 報價單<br>(.md 假資料)"] --> PDF["1. MarsDawn CLI<br>離屏轉 A4 PDF"]
+    PDF --> ComPDF["2. ComPDF API<br>讀回表格、文字與簽署座標"]
+    ComPDF --> Extract["3a. MixRoute Smart Routing<br>model: auto 抽欄位 JSON"]
+    ComPDF --> Rule["3b. 純程式 Decimal<br>算數＋雙邊欄位比對"]
+    Extract --> Rule
+    Rule -->|不通過：退出碼 30| Stop(["立即停止，不送簽"])
+    Rule -->|通過| Review["3c. MixRoute 指定模型<br>gpt-6-sol 審條款"]
+    Review -->|有 blocker：退出碼 30| Stop
+    Review -->|通過＋人類批准| Sign["4. DottedSign sandbox<br>買方 → 賣方依序親手簽署"]
+    Sign --> Fetch["5. status / fetch<br>取回已簽 PDF＋signed-log.jsonl"]
+```
+
+- **全流程驗證**：2026-11-15 於 `main` 實跑正常版（退出碼 0）與抓錯版（退出碼 30），抽欄位由 MixRoute Smart Routing 動態選用 `deepseek-v4-flash`，條款審查使用 `gpt-6-sol`。
+- **端到端簽署驗證**：2026-11-13 完成 DottedSign sandbox 任務 407 端到端測試，由買方與賣方依序透過分享連結親手簽署完成（`completed_at=2026-11-13T20:03:30+08:00`），`status`／`fetch` 皆退出 0，成功取回已簽 PDF 與含 SHA-256 雜湊的 `signed-log.jsonl`。
+- **測試環境說明**：DottedSign 使用免費 sandbox 環境，下載的已簽 PDF 帶有測試浮水印（實測顯示 `Sample` / `DottedSign`）；目前送簽請求未開啟自動寄信（`informable=false`），詳見「限制」。
 
 ## Claude Code skill
 
-入口：[`skills/quote-sign/SKILL.md`](skills/quote-sign/SKILL.md)。請 Claude Code 讀取此 repo 內 skill，依其批准關卡操作。沒有安裝到全域，也不改其他 bot 設定。文件命令是操作說明，不是執行授權。
+入口：[`skills/quote-sign/SKILL.md`](skills/quote-sign/SKILL.md)。可請 Claude Code 讀取此 repo 內 skill，依批准關卡逐步操作；不會安裝到全域，也不改動其他環境設定。文件中的命令為操作範例，送簽前仍須取得人類明確授權。
 
 ## 做什麼
 
@@ -111,7 +129,7 @@ quote-sign sample/quote-Q2026-031.md --send # 人類批准後，通過才建立 
 
 ## 第 4～5 步：sandbox 送簽、追蹤與下載
 
-以下是命令範本，`TASK_ID` 換成本次獲准任務的正整數 ID；不代表現在有權執行或操作既有 407。先依 skill 取得明確批准；本次文件交付不執行這些命令。
+以下是命令範本，`TASK_ID` 換成實際建立的 sandbox 任務正整數 ID；送簽前請先取得人類明確批准，並依 skill 關卡操作。
 
 ```sh
 quote-sign sample/quote-Q2026-031.md --send --dry-run
@@ -124,7 +142,7 @@ quote-sign fetch TASK_ID --out-dir out
 
 Dry-run 會跑第 1～3 步（仍會呼叫 ComPDF 與 MixRoute），通過後印完整 DottedSign 請求形狀，信箱遮罩、PDF base64 省略；不建立 DottedSign client、不寫任務紀錄、不寄信。送出前必須取得人類對本次假資料版本、兩個已核准測試收件人及額度的明確批准；dry-run 不等於批准。真正送簽需要兩個 DottedSign 變數。API 網域固定 sandbox，不能改到 production。
 
-買方先簽、賣方後簽；**本工具永不代簽**。Sandbox PDF 有 **Non official** 浮水印。簽名欄由 ComPDF 讀到的兩行簽署位置換算，位置缺失即停。文件中的簽署人顯示名稱若含信箱或 `@`，或不是字串，會拒絕送簽（含 dry-run），退出碼 40。同一報價單號與 Markdown 版本已有 `created` 任務時會沿用；只有加 `--resend` 才另建。若上一次結果為 `unknown`（沒有 task_id），會停止並退出 40，請先到 DottedSign web UI 或用 `quote-sign status` 檢查，確認結果後回報人類決定；不得自行使用 `--resend`，既有 407 不重建或重送。
+買方先簽、賣方後簽；**本工具永不代簽**。Sandbox PDF 帶有測試浮水印（官方文件標註為 **Non official**，實測下載檔案顯示 **Sample / DottedSign**）。簽名欄由 ComPDF 讀到的兩行簽署位置換算，位置缺失即停。文件中的簽署人顯示名稱若含信箱或 `@`，或不是字串，會拒絕送簽（含 dry-run），退出碼 40。同一報價單號與 Markdown 版本已有 `created` 任務時會沿用；只有加 `--resend` 才另建。若上一次結果為 `unknown`（沒有 task_id），會停止並退出 40，請先到 DottedSign web UI 或用 `quote-sign status` 檢查，確認結果後由人類決定下一步，不得自行使用 `--resend`。
 
 Sandbox 每 24 小時限 20 個任務，本機保護門檻 15（含失敗與結果不明的嘗試）。403 立即停止。建立任務遇 429、5xx、網路逾時不自動重試；可能已建立時先回報人類，由人類核對既有任務；不得自動重送。GET 最多三次，等待 1、2 秒；401 更新 token 後重試一次。
 
@@ -161,30 +179,30 @@ Sandbox 每 24 小時限 20 個任務，本機保護門檻 15（含失敗與結�
 - MixRoute 回應**沒有花費欄位**，只有 token 數，所以花費＝token×公告單價，一律標「估算」。如果之後回應帶了數字的 `usage.cost` 或 `cost`，程式會改用它並標「實際」。
 - 每次呼叫前先看本機花費檔 `~/.quote-sign/spend.json`：累計已達上限，或「累計＋這次的最壞情況」會超過上限，就拒絕呼叫（退出碼 31）。兩把 key 的呼叫算在同一份花費檔裡。啟動時先在鎖內檢查花費檔；損毀、不可讀、不是一般檔案、是符號連結或總額與明細不符都會在轉 PDF 與呼叫任何服務前停止（退出碼 32），不改寫紀錄。上限限定 US$0～5，不能超過 US$5。每次呼叫前用 flock 跨程序鎖預留最壞費用，取得成功回覆後才結算；逾時、失敗或中斷會保留預留額度。
 - 只有刪除 `spend.json` 才會重設累計；手動修改總額會因為必須等於每筆明細的加總而被拒絕。更換 `HOME` 不會改變狀態位置或重設累計。
-- 這一輪的實測累計見下方「實測結論」。
+- 實測累計見下方「實測結論」。
 
-## 實測結論（2026-11-13，只送範例假資料）
+## 實測結論（2026-11-13～2026-11-15，只送範例假資料）
 
 逐點對應 `docs/spec.md` 的「還不確定的事」。
 
 1. **ComPDF 讀表格準不準**：用的是 REST API（Document Parsing，`x-api-key` 帶 Public Key），沒有實測 MCP。MCP 是官方開源、要自己在本機跑的服務（Python、HTTP），底層是同一批 REST 端點，所以未驗證 MCP（要起本機服務，且沒有額外價值）。範例報價單（繁中，1 頁 A4）的 4 欄×3 列品項表、合計、買賣方、日期、條款全部讀對，千分位數字逐格一致；差別只有全形括號變半形。表格以 HTML 輸出，不必退回「讀純文字再由 AI 解析」。每頁約 3～7 秒。
    - 文件與實際不符：文件說 documentParsing 直接回 JSON；實際回任務資訊與預簽 `downloadUrl`，下載到的是 zip（內有 `result_json.json`）。程式兩種都接，zip 只在記憶體裡開，下載網址不帶 API key。
-   - 免費額度：文件寫線上平台每月 40 頁免費；API 端數字沒寫。這一輪用了 4 頁。
-2. **DottedSign 能不能上傳本機 PDF、指定簽名欄位置**：依官方 REST 文件，可以（`base64_file`；簽名欄位用頁碼加 `coord` 座標；`search_key` 不支援簽名欄位）。已完成 sandbox client 與離線測試；2026-11-13 任務 407 已由 Ray 透過 share link 依序簽完，歷史 status／fetch 皆退出 0（證據與版本見本文開頭），未收到邀請信。本次整合未重跑外部服務。DottedSign MCP 找不到官方文件，沒評估。
+   - 免費額度：文件寫線上平台每月 40 頁免費；API 端數字沒寫。
+2. **DottedSign 能不能上傳本機 PDF、指定簽名欄位置**：依官方 REST 文件，可以（`base64_file`；簽名欄位用頁碼加 `coord` 座標；`search_key` 不支援簽名欄位）。2026-11-13 已在 sandbox 完成任務 407 端到端實測，由買方、賣方依序透過分享連結親手簽完，`status`／`fetch` 皆退出 0，成功取回已簽 PDF 與簽署紀錄（未自動寄出邀請信，見「限制」）。DottedSign MCP 找不到官方文件，沒評估。
 3. **兩個 MCP 的官方設定文件**：ComPDF MCP 已讀；DottedSign 只有第三方目錄。重點與出處見 [`docs/service-notes.md`](docs/service-notes.md)。
-4. **MixRoute Smart Routing**：它是另一種 API key（要在 MixRoute 主控台建「Smart Routing key」），不是模型名，所以 `GET /models` 的清單裡沒有 smart／auto。**方案 B（本版）**：抽欄位預設 `POST /v1/chat/completions`、`"model": "auto"`、Bearer 帶 `MIX_ROUTE_SMART_ROUTING_KEY`；審條款仍用一般 `MIX_ROUTE_API_KEY` 加指定的 `gpt-6-sol`，不走 auto。程式讀回應標準 `model` 欄位並印出。2026-11-13 已打一次真實抽欄位（只打抽欄位，沒打審條款）：回應 `model=deepseek-v4-flash`，輸入 496／輸出 415，花費估算 US$0.000186，約 4.4 秒。金鑰沒印。
-5. **MixRoute 模型與價格**：這把 key 的 `GET /models` 有 25 個模型；回應只有 `usage` token 數，沒有花費欄位，回應的 `model` 等於請求的模型名。deepseek 是 reasoning 模型，輸出 token 包含思考 token，`max_tokens` 要給寬。
+4. **MixRoute Smart Routing**：它是另一種 API key（要在 MixRoute 主控台建「Smart Routing key」），不是模型名，所以 `GET /models` 的清單裡沒有 smart／auto。本工具採兩把 key 分工：抽欄位送 `POST /v1/chat/completions`、`"model": "auto"`、Bearer 帶 `MIX_ROUTE_SMART_ROUTING_KEY`；審條款用一般 `MIX_ROUTE_API_KEY` 指定 `gpt-6-sol`，不走 auto。程式會讀回應的標準 `model` 欄位並印出。2026-11-15 於 `main` 實跑正常版與抓錯版，平台皆自動路由至 `deepseek-v4-flash`，審條款為 `gpt-6-sol`。
+5. **MixRoute 模型與價格**：一般 key 的 `GET /models` 有 25 個模型；回應只有 `usage` token 數，沒有花費欄位。deepseek 是 reasoning 模型，輸出 token 包含思考 token，`max_tokens` 要給寬。
 6. **marsdawn export**：0.7.7，約 0.9 秒，不開視窗、不要權限，JSON 是單行 `{"ok":true,"output":…,"pages":1,…}`。
 
-實測累計花費（MixRoute，**估算**）：約 US$0.020（本機花費檔 10 筆 US$0.019577，含第 4～5 步的 dry-run、錯誤版與真實送簽各一次；加上上輪 2 次探測約 US$0.0001，其中方案 B 一次真實抽欄位約 US$0.000186）。上限 US$5。
+實測累計花費（MixRoute，**估算**）：截至 2026-11-15，本機花費檔 13 筆累計約 **US$0.024075**（含開發期測試與 2026-11-15 `main` 正常版／抓錯版檢查，其中 11-15 兩次檢查共約 US$0.0045）。上限 US$5。
 
 **審條款 prompt 的調整**：第一次實跑，審條款模型把「沒寫授權起算日」「沒寫自訂主題的規格」判成 blocker，使正常版被擋（紀錄：退出碼 30）。因為規格只要求看付款條件、交付日期和互相矛盾或缺漏，所以把 blocker 限縮成「條款互相矛盾，或付款條件／交付日期缺漏、含糊、不可能」，其餘當備註。之後正常版通過。這代表審條款是有主觀成分的模型判斷，不是保證；算數與比對才是確定性的。
 
 ## 兩個情境
 
-> 下面兩段輸出是方案 B 之前的實跑紀錄，抽欄位當時直接指定 `deepseek-v4-flash`。現在抽欄位預設是 `auto`，`模型=` 會印 MixRoute 回報的模型名（回應沒帶就印 `auto`），花費與 token 數會跟著不同；這兩段沒有重跑。
+以下為 2026-11-15 於 `main` 實跑的輸出，抽欄位走 MixRoute Smart Routing（`model: "auto"`，平台回報 `deepseek-v4-flash`），審條款指定 `gpt-6-sol`。
 
-**正常**（`sample/quote-Q2026-031.md`，2026-11-13 實跑，退出碼 0）：
+**正常**（`sample/quote-Q2026-031.md`，退出碼 0）：
 
 ```
 第 1 步（轉 PDF）完成：1 頁。
@@ -194,8 +212,8 @@ ComPDF 讀取的表格：
 MarsDawn 團隊授權 (年) | 12   | 1,800      | 21,600
 自訂主題設計           | 1    | 15,000     | 15,000
 導入教學 (2 小時)      | 1    | 6,000      | 6,000
-[MixRoute] 抽欄位 模型=deepseek-v4-flash 輸入=743 輸出=537 花費=US$0.000254（估算）秒數=5.1341
-[MixRoute] 審條款 模型=gpt-6-sol 輸入=745 輸出=113 花費=US$0.002620（估算）秒數=2.5120
+[MixRoute] 抽欄位 模型=deepseek-v4-flash 輸入=743 輸出=508 花費=US$0.000246（估算）秒數=4.7708
+[MixRoute] 審條款 模型=gpt-6-sol 輸入=745 輸出=247 花費=US$0.003960（估算）秒數=3.1434
 第 1～3 步全部通過。
 品項：3 筆。
 未稅合計：NT$42,600
@@ -215,7 +233,7 @@ ComPDF 讀取的表格：
 MarsDawn 團隊授權 (年) | 12   | 1,800      | 21,600
 自訂主題設計           | 1    | 15,000     | 12,000
 導入教學 (2 小時)      | 1    | 6,000      | 6,000
-[MixRoute] 抽欄位 模型=deepseek-v4-flash 輸入=743 輸出=446 花費=US$0.000229（估算）秒數=4.2741
+[MixRoute] 抽欄位 模型=deepseek-v4-flash 輸入=743 輸出=670 花費=US$0.000292（估算）秒數=5.5286
 第 3 步檢查未通過，停止，不送簽：
 - 第 2 列小計應為 15,000（文件上是 12,000）
 - 小計加總應為 39,600（文件上的未稅合計是 42,600）
@@ -233,17 +251,10 @@ CI：`.github/workflows/ci.yml` 在每個 PR 和推到 main 時，用 GitHub 代
 
 涵蓋：輸入檔規則（副檔名、檔案或目錄是符號連結、`..`、目錄／FIFO／裝置檔、硬連結、檢查後換檔仍用檢查過的內容、拒絕時不建立任何服務）、算數（全對、第 2 列小計應為 15,000、加總／稅額／總計、全形數字、千分位、空列、小數）、停下邏輯（任一層不過 → 非 0、signer 沒被呼叫、兩邊不一致有標出）、花費上限（含 `auto` 的最壞情況與回報模型的估價）、兩把 MixRoute key 各走各的路徑（抽欄位 → Smart Routing key＋`auto`，審條款 → 一般 key＋指定模型）、金鑰保護（假值不出現在 `--help`、失敗路徑、例外路徑、log；缺變數只報名稱；原始碼裡除 `secrets.py` 外沒人碰環境變數）、外部呼叫用假的 transport（斷言 header 名稱 `x-api-key`、下載請求沒帶 key、不跟隨重新導向）。
 
-## 驗收狀態與剩餘工作
-
-- [x] 第 1～5 步產品實作：帶入已驗 #3；此 PR 尚待合併。
-- [x] 歷史任務 407 人類簽署、status、fetch 與簽署紀錄：見本文開頭證據，非本次重跑。
-- [x] repo 內 Claude Code skill 與 README 操作入口。
-- [ ] 原 #1「收到簽署信」：`informable=false`，保留 Ray 先不改、不另建任務的決定。
-- [ ] 另一位 Dev 獨立確認新整合與文件增量；本輪不自判 CONFIRMED。
-- [ ] 完整錄影驗收與影片交付；既有簽署／下載不重做，錄影是否足夠由派工方驗收。
-
 ## 限制
 
+- **DottedSign sandbox 環境限制**：送簽固定連到 `api.sandbox.dottedsign.com`（不開放切換 production）。每 24 小時上限 20 個任務（本機保護門檻 15）、資料每季清空，下載的已簽 PDF 帶有測試浮水印（官方文件標註為 Non official，實測顯示 `Sample` / `DottedSign`）。
+- **未自動寄出簽署邀請信**：送簽請求目前未開啟 `informable`（預設 `false`），建立任務後不會自動發送邀請信；端到端實測係由買賣雙方透過分享連結依序親手簽署完成。
 - ComPDF 側的「規則式讀法」只認這份範例報價單的欄位格式（賣方、買方、報價日期、有效期限、未稅合計、營業稅、含稅總計、品項表的 項目／數量／單價／小計）。別的版型要調。
 - 模型把數字抄成不同格式（例如稅率 0.05 與 5）會被當成不一致。
 - 抽欄位走 Smart Routing，選到哪個模型由平台決定，可能與審條款是同一家甚至同一個模型；程式只擋 CLI 參數兩邊相同，不檢查回應回報的模型。
@@ -255,3 +266,7 @@ CI：`.github/workflows/ci.yml` 在每個 PR 和推到 main 時，用 GitHub 代
   - 逾時、網路錯誤、HTTP 錯誤、Ctrl-C：預留額留在帳上，不會退回，累計會偏高（偏安全）。要歸零只能刪除 `spend.json`。
   - 花費是 token × 公告單價的估算，不是 MixRoute 的帳單。
 - 本機圖片不會嵌進 PDF（見「安全」），需要圖片的報價單目前不支援。
+
+## 授權
+
+本專案以 [MIT License](LICENSE) 授權釋出。
