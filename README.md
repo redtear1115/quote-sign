@@ -4,9 +4,13 @@ Markdown 報價單 → PDF → AI 檢查 → 電子送簽 → 追蹤歸檔。
 
 OPEN LAB AI 實作挑戰賽（2026）參賽作品，整合 **MarsDawn CLI**、**ComPDF**、**MixRoute（Smart Routing＋指定模型）** 與 **DottedSign sandbox**，把報價單轉檔、金額核對、條款審查、建立簽署任務到取回已簽 PDF 串成一條可稽核的命令列流程（附 Claude Code skill）。
 
-- 規格文件：[`docs/spec.md`](docs/spec.md)
-- 送簽設計：[`docs/design-signing.md`](docs/design-signing.md)
-- 外部服務筆記：[`docs/service-notes.md`](docs/service-notes.md)
+## 技術文件
+
+- **架構總覽**：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — 一頁式系統架構圖、設計取捨（ComPDF 讀回／MixRoute 雙路徑＋純程式算數／人機邊界）、模組邊界與安全護欄
+- **規格文件**：[`docs/spec.md`](docs/spec.md) — 問題定義、五步流程與展示情境
+- **送簽設計**：[`docs/design-signing.md`](docs/design-signing.md) — DottedSign sandbox 座標換算、冪等／配額保護與歸檔設計
+- **外部服務筆記**：[`docs/service-notes.md`](docs/service-notes.md) — ComPDF、MixRoute、DottedSign API 實測筆記與歷史驗收紀錄
+- **Agent 操作指南**：[`skills/quote-sign/SKILL.md`](skills/quote-sign/SKILL.md) — Claude Code skill 流程與人類批准關卡
 
 ## 架構流程
 
